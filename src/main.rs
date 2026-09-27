@@ -1,0 +1,104 @@
+mod hypr;
+mod ipc;
+mod store;
+mod ui;
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::{Arc, atomic::AtomicBool};
+
+use gtk4 as gtk;
+use gtk4::{gio::prelude::*, glib};
+
+use crate::store::NOTE_PATH_ENV;
+
+fn main() {
+    // Fallback for the case where no desktop portal is answering: GTK_THEME is
+    // ignored when the portal supplies `gtk-theme`, so the real pin lives in
+    // `ui::create_window`, which sets it through GtkSettings instead.
+    //
+    // SAFETY: `main` is single-threaded at this point and no other thread has
+    // been spawned, so there is no concurrent reader of the environment.
+    unsafe { std::env::set_var("GTK_THEME", "Adwaita:dark") };
+
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if arguments
+        .iter()
+        .any(|argument| argument == "--version" || argument == "-V")
+    {
+        println!("hypr-scratch {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if arguments
+        .iter()
+        .any(|argument| argument == "--help" || argument == "-h")
+    {
+        println!("Usage: hypr-scratch [--toggle] [--background]");
+        println!("Open or toggle the floating scratchpad notepad.");
+        println!("--background starts the persistent instance without showing the notepad.");
+        println!(
+            "Notes are saved to ~/Documents/scratchpad.md; set {NOTE_PATH_ENV} to change that."
+        );
+        return;
+    }
+    let start_visible = !arguments
+        .iter()
+        .any(|argument| argument == "--background" || argument == "-b");
+
+    let toggle_requested = Arc::new(AtomicBool::new(false));
+    let _toggle_thread = match ipc::acquire_instance() {
+        Ok(ipc::AcquiredInstance::Primary(instance)) => {
+            Some(instance.spawn_toggle_listener(toggle_requested.clone()))
+        }
+        // Another instance already owns the socket. It just received our
+        // toggle, so this process has nothing left to do.
+        Ok(ipc::AcquiredInstance::Secondary) => return,
+        Err(error) => {
+            eprintln!("could not start scratchpad instance: {error}");
+            return;
+        }
+    };
+
+    let app = gtk::Application::builder()
+        .application_id("dev.maxii.HyprScratch")
+        .build();
+    app.add_main_option(
+        "toggle",
+        glib::Char::from(b't'),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Toggle the notepad (the default)",
+        None,
+    );
+    app.add_main_option(
+        "background",
+        glib::Char::from(b'b'),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Start the persistent instance without showing the notepad",
+        None,
+    );
+    let ui: Rc<RefCell<Option<ui::UiHandle>>> = Rc::new(RefCell::new(None));
+
+    app.connect_activate({
+        let ui = ui.clone();
+        let toggle_requested = toggle_requested.clone();
+        move |app| {
+            if let Some(existing) = ui.borrow().as_ref() {
+                existing.toggle();
+            } else {
+                *ui.borrow_mut() = Some(ui::create_window(
+                    app,
+                    toggle_requested.clone(),
+                    start_visible,
+                ));
+            }
+        }
+    });
+
+    // Keep the process alive after the notepad is hidden. The per-user Unix
+    // socket forwards later invocations here, so the hotkey toggles one
+    // notepad instead of starting a second copy.
+    let _hold = app.hold();
+    app.run();
+}

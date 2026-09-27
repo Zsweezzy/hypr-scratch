@@ -1,0 +1,14 @@
+[package]
+name = "hypr-scratch"
+version = "0.1.0"
+edition = "2024"
+description = "A floating iced scratchpad notepad for Hyprland"
+license = "MIT"
+
+[[bin]]
+name = "hypr-scratch"
+path = "src/main.rs"
+
+[dependencies]
+gtk4 = "0.11.5"
+libc = "0.2"
