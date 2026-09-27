@@ -1,0 +1,7 @@
+# Build artefacts. `target/` is the whole Rust build tree and is large; the
+# test sink in it is built on demand by the acceptance suite.
+/target
+*.swp
+
+# Scratch files the acceptance suite has used for a local geometry cache.
+.geom
