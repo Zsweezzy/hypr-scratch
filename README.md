@@ -25,7 +25,8 @@ install -Dm755 target/release/hypr-scratch ~/.local/bin/hypr-scratch
 - `Tab`: insert a tab (only with no selection; with a selection it moves focus)
 
 It also closes itself when you click another window or move focus with a
-keybind. See [Dismissing the notepad](#dismissing-the-notepad).
+keybind. Both of those are really the same thing — it closes when it loses
+focus. See [Dismissing the notepad](#dismissing-the-notepad).
 
 ## Notes
 
@@ -40,8 +41,18 @@ over the note, so an interrupted write cannot truncate the existing note.
 ## Dismissing the notepad
 
 All four routes work: the hotkey, `Esc`, clicking another window, and moving
-focus with a keybind. Clicking and focus changes are detected with
-`GtkWindow`'s **`is-active`** property, not `has-focus`.
+focus with a keybind.
+
+Worth being precise about how the last two work, because it is narrower than
+"click away and it goes away". There is no pointer or grab check anywhere in the
+code. Dismissal is one thing — `is-active` went false — so *clicking another
+window* dismisses the notepad only because that click gives the other window
+focus. A click that does not move focus leaves the notepad up. Clicking the
+desktop background does exactly that under Hyprland's default configuration, and
+so does clicking any window with `nofocus`. If you want the notepad to vanish on
+those, it needs a real pointer check, which is not implemented.
+
+The property watched is `GtkWindow`'s **`is-active`**, never `has-focus`.
 
 A fifth route exists that is not a feature: the window manager can ask the
 notepad to close, via `closewindow` or `killactive` on the published class
@@ -118,6 +129,12 @@ And Hyprland matches a rule against the **whole** class, not a substring of it,
 so the `.*` on both ends is load-bearing. A bare `"HyprScratch"` matches nothing,
 and the symptom is not an error but a notepad that opens tiled, unfocused, and
 apparently broken.
+
+The app's own dispatches use the class too — `class:dev.maxii.HyprScratch`, exact,
+no wildcards — rather than the window title. The title also works today, but it
+is only as reliable as the string handed to `set_title`, whereas the class comes
+from the application ID and is fixed at launch. Using the same string in both
+places also means the rule and the dispatch cannot drift apart.
 
 ### The corner radius is the app's, not the compositor's
 
@@ -223,11 +240,21 @@ every gate is checked against the compositor, not against the app:
 ./scripts/stress.sh   # repeated open/close cycles
 ```
 
+`stress.sh` also asserts the process is the *same one* at the end as at the
+start. State checks alone cannot see a crash: if the app dies, the next toggle
+quietly starts a fresh primary, the window comes up, the state looks right, and
+the suite reports a clean run over a binary that fell over.
+
 Artifacts go to a `mktemp -d` scratch dir, so running the suites does not write
 into the source tree.
 
-Two rules are baked into the suite, both learned the hard way, and both of which
-produced *false failures* while the app was behaving correctly:
+The suite needs a live Hyprland session and these on `PATH`: `hyprctl`, `grim`,
+`wtype`, `ydotool`, and `kitty` (used only to spawn the sink window — any
+terminal would do, it just has to echo what it is sent). It moves the pointer and
+clicks, so it will fight you for the mouse; run it when you are not.
+
+Five rules are baked into the suite, all of them learned the hard way, and the
+first four produced *false results* while the app was behaving correctly:
 
 - **Never assume the desktop's layout.** Earlier revisions hardcoded both the
   coordinate they clicked and the window they expected to be behind the
@@ -245,6 +272,58 @@ produced *false failures* while the app was behaving correctly:
   a compositor round trip. A fixed 2.5s sleep occasionally samples the window
   mid-transition and reports a failure that does not exist. `stress.sh` always
   sampled rather than assumed; `gates.sh` did not, and that was the flake.
+- **Never let the suite block.** `hypr-scratch` called bare is a request to
+  toggle *if an instance is already running*. If none is, the caller becomes the
+  primary and blocks in the GTK main loop forever. When gate 9 killed the process
+  and the suite could not tell "dead" from "closed", the next toggle hung the run
+  instead of failing it. Every toggle is detached and then polled for.
+- **Tear down by PID, never by a Hyprland selector.** See below.
+- **A third party taking focus is not a regression.** Steam launched mid-run
+  during this work, took focus, and the notepad closed itself — correctly, since
+  focus-away dismissal is the feature. `reset_notepad` re-opens up to three times
+  and reports the retries rather than passing or failing on someone else's
+  window.
+- **Observe before deciding to act.** A toggle sent while a launch is still in
+  flight lands *after* that launch has opened the window, and closes it again.
+  The window appears in about 0.3s, so sampling the state 0.05s after starting
+  the process reads "closed", concludes a toggle is needed, and produces a run
+  that opens and immediately closes every time. So the launch is waited on
+  first, and a toggle is only sent if the window genuinely never appeared.
+
+### A selector that matches nothing does not fail
+
+This is the sharpest edge in the whole thing, and it bites in both directions.
+
+A dispatcher selector that matches no window is not an error. The dispatch falls
+back to the **focused** window, and reports `ok`. The same is true of a selector
+that is silently wrong in some other way, which makes the failure very hard to
+see coming:
+
+- `hl.dsp.window.float({ class:foo })` — `class:foo` is not Lua. The dispatch is
+  a syntax error, does nothing, and still prints `ok`. Inside these tables the
+  key must be assigned: `class = "foo"`.
+- `hl.dsp.window.close({ class = "hypr-scratch" })` — class matching is a
+  whole-class regex against the full GTK application id, so this matches nothing,
+  falls back to the focused window, and closes that instead.
+- `hl.dsp.window.kill({ address = "0x…" })` on an address that is already gone —
+  falls back to the focused window and `SIGKILL`s it. This is how a helper written
+  to clean up its own `scratchsink` windows killed the notepad process instead,
+  and the suite then reported `process survived (got '0', want '1')`.
+
+That last one is why `sink_down` kills the PID it recorded at spawn time. A PID
+cannot be misrouted to some other window.
+
+Two more things about these dispatchers, both of which read as bugs:
+
+- `hl.dsp.window.close` is a genuine close request — it closes the notepad while
+  it is *unfocused*, by address, and the process survives. It is not the
+  fallback in disguise.
+- `hl.dsp.window.kill` is a hard `SIGKILL` of the client process. It bypasses GTK
+  entirely, so the notepad's `close_request` handler never runs. Use `close` to
+  test dismissal; `kill` only to dispose of a throwaway window.
+- kitty declines close requests, so a close-based teardown of the sink leaves the
+  window up and they accumulate, one per run. That is a kitty behaviour, not a
+  Hyprland one.
 
 ### Measuring things
 

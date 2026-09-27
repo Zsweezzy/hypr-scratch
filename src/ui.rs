@@ -22,11 +22,19 @@ const PANEL_WIDTH: i32 = 640;
 const PANEL_HEIGHT: i32 = 480;
 const PANEL_MIN_WIDTH: i32 = 360;
 const PANEL_MIN_HEIGHT: i32 = 240;
-/// Window title, and the handle `hypr::move_and_center` uses to address the
-/// notepad in Hyprland dispatches. It has to be distinctive: a dispatch that
-/// cannot name its window falls back to whatever is focused, which is a good
-/// way to move the window the user is actually working in.
+/// Window title, shown in the compositor's window list.
 const WINDOW_TITLE: &str = "hypr-scratch";
+/// The GTK application ID, which is what Hyprland reports as the window class.
+///
+/// This, not the title, is how `hypr::move_and_center` addresses the notepad. A
+/// dispatch that cannot name its window does not fail: it falls back to whatever
+/// is focused, which is a good way to move the window the user is actually
+/// working in. The class is the stabler of the two -- it comes from the
+/// application ID and is fixed at launch, whereas a title is only as good as the
+/// string passed to `set_title` -- and it is what the `hypr-scratch-overlay`
+/// rule already matches, so the rule and the dispatch cannot disagree about
+/// which window is meant.
+pub const WINDOW_CLASS: &str = "dev.maxii.HyprScratch";
 const MAIN_MONITOR_ENV: &str = "HYPR_SCRATCH_MONITOR";
 
 /// Style provider priority, deliberately above every level GTK itself uses.
@@ -232,7 +240,26 @@ fn configure_overlay_window(window: &gtk::ApplicationWindow) {
     window.set_deletable(false);
 }
 
-/// Closes the notepad when the user clicks away or focuses another window.
+/// The dismissal decision, as a pure function: `(armed_after, dismiss)`.
+///
+/// Split out from the GTK signal because the interesting cases are the ones
+/// that must *not* dismiss, and those are impossible to provoke through a real
+/// compositor. Every one of the eight combinations is a test below.
+fn on_focus_change(armed: bool, is_active: bool, is_visible: bool) -> (bool, bool) {
+    if is_active {
+        // The compositor has really given us the keyboard. From here on, losing
+        // it means the user moved on, rather than that the window is still on
+        // its way up and has not been activated yet.
+        (true, false)
+    } else {
+        // Disarm on the way past whether or not we act, so a hidden window
+        // cannot be dismissed a second time and `show` has to re-arm.
+        (false, armed && is_visible)
+    }
+}
+
+/// Closes the notepad when the user focuses another window, which is what
+/// clicking another window does.
 ///
 /// This is the whole reason the notepad is a normal window. A layer surface has
 /// to take a keyboard grab to receive the keyboard, and while the grab is held
@@ -240,6 +267,11 @@ fn configure_overlay_window(window: &gtk::ApplicationWindow) {
 /// underneath went nowhere, focus keybinds went nowhere, and no compositor event
 /// was emitted. A real toplevel gets honest focus semantics, so the compositor
 /// is free to take the activation away -- and then this fires.
+///
+/// It is worth being precise that there is no pointer or grab check here, so
+/// this dismisses on *focus* loss rather than on clicks. A click that does not
+/// move focus -- the desktop background, or a window marked `nofocus` -- leaves
+/// the notepad up.
 ///
 /// The property to watch is `is-active`, not `has-focus`. On Wayland GTK never
 /// sets `has-focus` on a toplevel at all: it stays `false` for the window's
@@ -249,14 +281,13 @@ fn configure_overlay_window(window: &gtk::ApplicationWindow) {
 fn install_focus_dismissal(ui: &Rc<ScratchUi>) {
     let signal_ui = ui.clone();
     ui.window.connect_is_active_notify(move |window| {
-        if window.is_active() {
-            // The compositor has really given us the keyboard. From here on,
-            // losing it means the user moved on rather than that the window is
-            // still on its way up.
-            signal_ui.armed_for_focus_loss.set(true);
-            return;
-        }
-        if signal_ui.armed_for_focus_loss.replace(false) && window.is_visible() {
+        let (armed, dismiss) = on_focus_change(
+            signal_ui.armed_for_focus_loss.get(),
+            window.is_active(),
+            window.is_visible(),
+        );
+        signal_ui.armed_for_focus_loss.set(armed);
+        if dismiss {
             signal_ui.hide();
         }
     });
@@ -288,7 +319,7 @@ fn install_placement(ui: &Rc<ScratchUi>) {
             if window.is_visible()
                 && let Some(target) = target.as_deref()
             {
-                hypr::move_and_center(WINDOW_TITLE, target);
+                hypr::move_and_center(WINDOW_CLASS, target);
             }
             ControlFlow::Break
         });
@@ -599,5 +630,60 @@ fn install_css() {
     provider.load_from_data(css);
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(&display, &provider, CSS_PRIORITY);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::on_focus_change;
+
+    /// Every combination, because the cases that must *not* dismiss are the
+    /// whole point of the arming and cannot be provoked through a compositor.
+    #[test]
+    fn the_dismissal_decision_over_every_combination() {
+        // (armed, is_active, is_visible) -> (armed_after, dismiss)
+        let cases = [
+            // Not yet activated, and not visible either: this is the state the
+            // window passes through on its way up. It must not dismiss, or the
+            // notepad closes itself the instant it opens.
+            ((false, false, false), (false, false)),
+            // Armed, inactive, but already hidden -- a hide() that raced the
+            // notification. Must not dismiss again.
+            ((true, false, false), (false, false)),
+            // The one case that dismisses: the user moved on.
+            ((true, false, true), (false, true)),
+            // Gained activation. Arms, never dismisses.
+            ((false, true, true), (true, false)),
+            ((true, true, true), (true, false)),
+            ((false, true, false), (true, false)),
+            ((true, true, false), (true, false)),
+            // Never armed, and never active: nothing to dismiss.
+            ((false, false, true), (false, false)),
+        ];
+        for (input, want) in cases {
+            assert_eq!(
+                on_focus_change(input.0, input.1, input.2),
+                want,
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn arming_is_cleared_by_losing_it_and_set_by_gaining_it() {
+        // The cycle a hide/show pair depends on: arm on activation, disarm on
+        // the loss that dismisses, so a second loss while hidden is a no-op and
+        // the next show has to arm again.
+        let (armed, dismiss) = on_focus_change(false, true, true);
+        assert!(armed && !dismiss, "gaining activation arms");
+
+        let (armed, dismiss) = on_focus_change(armed, false, true);
+        assert!(
+            !armed && dismiss,
+            "losing it while up dismisses and disarms"
+        );
+
+        let (armed, dismiss) = on_focus_change(armed, false, true);
+        assert!(!armed && !dismiss, "a second loss does not dismiss again");
     }
 }

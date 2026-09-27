@@ -60,7 +60,7 @@ fn main() {
     };
 
     let app = gtk::Application::builder()
-        .application_id("dev.maxii.HyprScratch")
+        .application_id(crate::ui::WINDOW_CLASS)
         .build();
     app.add_main_option(
         "toggle",

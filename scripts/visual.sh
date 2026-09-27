@@ -11,7 +11,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # Artifacts go to a scratch dir, not the repo and not a fixed /tmp path: the
 # harness used to hardcode /tmp/opencode, which meant it only worked from one
 # machine's leftovers and would have written into the source tree once it moved.
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/hypr-scratch-gates.XXXXXX")
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/hypr-scratch-visual.XXXXXX")
 export WORK
 trap 'rm -rf "$WORK"' EXIT
 cd "$HERE"
@@ -23,12 +23,31 @@ for c in json.load(sys.stdin):
     if 'HyprScratch' in c['class']:
         print(*c['at'], *c['size'], c['monitor']); break"; }
 
+is_open() { hyprctl clients -j 2>/dev/null | python3 -c "
+import json, sys
+print('yes' if any('HyprScratch' in c['class'] for c in json.load(sys.stdin)) else 'no')"; }
+
 open_notepad() {
-    pkill -x hypr-scratch 2>/dev/null
-    sleep 1.5
-    : > "$WORK"/v.md
-    setsid env HYPR_SCRATCH_FILE="$WORK"/v.md ~/.local/bin/hypr-scratch >/dev/null 2>&1 </dev/null &
-    sleep 3
+    # Poll, and retry. A fixed `sleep 3` and hope is how a run ends up measuring
+    # a window that is not there: Steam took focus during development, the
+    # notepad correctly dismissed itself, and every measurement below then ran
+    # against an empty crop and reported a confident zero.
+    local attempt=0
+    while [ "$attempt" -lt 3 ]; do
+        attempt=$((attempt + 1))
+        pkill -x hypr-scratch 2>/dev/null
+        sleep 1.2
+        : > "$WORK"/v.md
+        setsid env HYPR_SCRATCH_FILE="$WORK"/v.md ~/.local/bin/hypr-scratch >/dev/null 2>&1 </dev/null &
+        local i=0
+        while [ "$i" -lt 50 ]; do
+            [ "$(is_open)" = yes ] && return 0
+            sleep 0.1; i=$((i + 1))
+        done
+        echo "         (attempt $attempt: the notepad would not stay open)"
+    done
+    echo "  FAIL  the notepad is not open; every measurement below is meaningless"
+    exit 1
 }
 
 set_blur() {  # $1 = true (blur on) | false (blur off)
@@ -46,7 +65,15 @@ PY
 }
 
 shoot() {  # $1 = output name
-    read -r x y w h mon <<<"$(logical_geom)"
+    local geom; geom=$(logical_geom)
+    # Without this the `read` below quietly yields five empty fields, the
+    # arithmetic below quietly yields a degenerate box, and the crop is silently
+    # empty -- so the diff is empty and the gate reports a confident zero.
+    if [ -z "$geom" ]; then
+        echo "  FAIL  no geometry for the notepad; is it open?"
+        exit 1
+    fi
+    read -r x y w h mon <<<"$geom"
     case "$mon" in
         0) OUT=DP-1; OX=1920; SC=2 ;;
         1) OUT=DP-2; OX=3840; SC=1 ;;
@@ -88,6 +115,8 @@ box = (px, py, px + pw, py + ph)
 a = Image.open(sys.argv[1]).convert('RGB').crop(box)
 b = Image.open(sys.argv[2]).convert('RGB').crop(box)
 v = list(ImageChops.difference(a, b).get_flattened_data())
+if not v:
+    raise SystemExit('empty crop: the geometry or the capture was wrong, not the blur')
 n = sum(1 for p in v if max(p) > 8)
 print(f'{n} {sum(sum(p) for p in v) / len(v):.2f}')" "$1" "$2"; }
 
@@ -97,20 +126,28 @@ set_blur false; open_notepad
 shoot "$WORK"/blur_off.png; sleep 1; shoot "$WORK"/blur_c.png
 set_blur true
 
-NULL=$(panel_diff "$WORK"/blur_a.png "$WORK"/blur_b.png)
-OFFNULL=$(panel_diff "$WORK"/blur_off.png "$WORK"/blur_c.png)
-EFFECT=$(panel_diff "$WORK"/blur_a.png "$WORK"/blur_off.png)
-echo "  interior mean/stddev, blur on : $(stats "$WORK"/blur_a.png)"
-echo "  interior mean/stddev, blur off: $(stats "$WORK"/blur_off.png)"
+NULL=$(panel_diff "$WORK"/blur_a.png "$WORK"/blur_b.png 2>&1)
+OFFNULL=$(panel_diff "$WORK"/blur_off.png "$WORK"/blur_c.png 2>&1)
+EFFECT=$(panel_diff "$WORK"/blur_a.png "$WORK"/blur_off.png 2>&1)
+echo "  interior mean/stddev, blur on : $(stats "$WORK"/blur_a.png 2>&1)"
+echo "  interior mean/stddev, blur off: $(stats "$WORK"/blur_off.png 2>&1)"
 echo "  noise floor, blur on  vs on  : $NULL"
 echo "  noise floor, blur off vs off : $OFFNULL"
 echo "  blur on vs off (the effect)   : $EFFECT"
-read -r E_CNT E_MEAN <<<"$EFFECT"
-read -r N_CNT N_MEAN <<<"$NULL"
-if [ "$E_CNT" -gt $(( N_CNT * 3 + 500 )) ] && awk "BEGIN{exit !($E_MEAN > $N_MEAN * 2 + 0.5)}"; then
-    echo "  PASS  blur measurably changes the panel, well above the noise floor"
+# An empty result means the measurement failed, which is a different problem
+# from the blur not working. Say so, rather than comparing empty strings and
+# reporting a confident zero.
+if [ -z "$NULL" ] || ! printf '%s' "$NULL" | grep -qE '^[0-9]+ '; then
+    echo "  FAIL  could not measure the panel: $NULL"
+    FAIL=1
 else
-    echo "  FAIL  blur is not reaching the panel"; FAIL=1
+    read -r E_CNT E_MEAN <<<"$EFFECT"
+    read -r N_CNT N_MEAN <<<"$NULL"
+    if [ "$E_CNT" -gt $(( N_CNT * 3 + 500 )) ] && awk "BEGIN{exit !($E_MEAN > $N_MEAN * 2 + 0.5)}"; then
+        echo "  PASS  blur measurably changes the panel, well above the noise floor"
+    else
+        echo "  FAIL  blur is not reaching the panel"; FAIL=1
+    fi
 fi
 
 set_blur true; open_notepad; shoot "$WORK"/final.png
