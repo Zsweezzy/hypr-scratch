@@ -2,10 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     env,
     rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::Duration,
 };
 
@@ -16,7 +13,7 @@ use gtk4::{
     prelude::*,
 };
 
-use crate::{hypr, store::NoteStore};
+use crate::{hypr, ipc::PendingCommands, store::NoteStore};
 
 const PANEL_WIDTH: i32 = 640;
 const PANEL_HEIGHT: i32 = 480;
@@ -53,6 +50,12 @@ const AUTOSAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 /// monitor. Long enough for the window rules to have been applied.
 const PLACEMENT_DELAY: Duration = Duration::from_millis(80);
 
+/// How often the socket thread's flags are applied.
+///
+/// Short enough that a click feels like it did something, long enough that this
+/// is not a busy loop on a machine that is otherwise idle.
+const POLL_INTERVAL: Duration = Duration::from_millis(8);
+
 pub struct UiHandle(Rc<ScratchUi>);
 
 impl UiHandle {
@@ -70,7 +73,7 @@ struct ScratchUi {
     store: NoteStore,
     save_timer: RefCell<Option<glib::SourceId>>,
     dirty: Cell<bool>,
-    toggle_requested: Arc<AtomicBool>,
+    pending: Arc<PendingCommands>,
     /// Connector the notepad should open on, if one could be chosen.
     target_monitor: Option<String>,
     /// Set once the window has actually become the active toplevel, and cleared
@@ -83,7 +86,7 @@ struct ScratchUi {
 
 pub fn create_window(
     app: &gtk::Application,
-    toggle_requested: Arc<AtomicBool>,
+    pending: Arc<PendingCommands>,
     start_visible: bool,
 ) -> UiHandle {
     // Pin the theme through GtkSettings rather than the environment: on Wayland
@@ -155,7 +158,7 @@ pub fn create_window(
         store,
         save_timer: RefCell::new(None),
         dirty: Cell::new(false),
-        toggle_requested,
+        pending,
         target_monitor,
         armed_for_focus_loss: Cell::new(false),
     });
@@ -183,12 +186,23 @@ pub fn create_window(
     install_focus_dismissal(&ui);
     install_placement(&ui);
 
-    // The socket thread only flips a flag; the GTK main loop applies it.
+    // The socket thread only sets flags; the GTK main loop applies them.
     {
         let ui = ui.clone();
-        glib::timeout_add_local(Duration::from_millis(8), move || {
-            if ui.toggle_requested.swap(false, Ordering::SeqCst) {
+        glib::timeout_add_local(POLL_INTERVAL, move || {
+            // Both flags are taken every pass, whatever is done with them.
+            // Leaving one set for a later pass would strand it: a `dismiss`
+            // read alongside a `toggle` would sit in the queue and then fire
+            // against the window that toggle had just opened, closing the
+            // notepad the user had only just asked for.
+            let toggle = ui.pending.take_toggle();
+            let dismiss = ui.pending.take_dismiss();
+            if toggle {
+                // An explicit request outranks an incidental click that landed
+                // in the same few milliseconds.
                 ui.toggle();
+            } else if dismiss && on_outside_click(ui.window.is_visible()) {
+                ui.hide();
             }
             ControlFlow::Continue
         });
@@ -268,10 +282,10 @@ fn on_focus_change(armed: bool, is_active: bool, is_visible: bool) -> (bool, boo
 /// was emitted. A real toplevel gets honest focus semantics, so the compositor
 /// is free to take the activation away -- and then this fires.
 ///
-/// It is worth being precise that there is no pointer or grab check here, so
-/// this dismisses on *focus* loss rather than on clicks. A click that does not
-/// move focus -- the desktop background, or a window marked `nofocus` -- leaves
-/// the notepad up.
+/// It is worth being precise that this is a *focus* check, and that it alone
+/// cannot cover every click. Clicking the desktop background, or a window
+/// marked `nofocus`, moves no focus, so on its own this path leaves the notepad
+/// up. `on_outside_click` covers the rest, from the other direction.
 ///
 /// The property to watch is `is-active`, not `has-focus`. On Wayland GTK never
 /// sets `has-focus` on a toplevel at all: it stays `false` for the window's
@@ -291,6 +305,36 @@ fn install_focus_dismissal(ui: &Rc<ScratchUi>) {
             signal_ui.hide();
         }
     });
+}
+
+/// Whether a click the compositor reported as outside should dismiss.
+///
+/// This cannot be decided in the client, and the reason is worth writing down
+/// rather than rediscovering. GTK4 removed the client-side pointer grab API
+/// outright -- `gdk::Seat` has no `grab` method at all -- so a window that is not
+/// already grabbing never hears about clicks outside itself. The notepad cannot
+/// take a grab to find out, because a grab is exactly what it gave up: while one
+/// is held Hyprland will not move focus off the notepad, so focus-away dismissal
+/// stops working and clicks on the windows underneath are swallowed. There is no
+/// arrangement that observes both.
+///
+/// GTK can still report the pointer crossing the notepad's edges
+/// (`EventControllerMotion`), but that only fires on a *transition*. Opening the
+/// notepad is a keybind, so the pointer is usually somewhere else already and
+/// never enters; clicking the background then produces no event of any kind. So
+/// hover tracking cannot cover the case either, which is why the compositor tells
+/// us instead: `hypr-scratch-outside-click.sh`, bound to bare LMB and RMB in
+/// `hyprland.lua` with `non_consuming` so the click still reaches whatever was
+/// underneath, sends `Command::Dismiss` over the existing socket once it has
+/// established that the click landed outside this window's rect.
+///
+/// The visibility check is not padding. The script already declines to send
+/// anything when it cannot find the window, so what this catches is the gap
+/// between a `hide()` and the poll that would have consumed the message -- and a
+/// window started with `--background`, which has never been shown and must not be
+/// hidden by a click it never saw.
+fn on_outside_click(is_visible: bool) -> bool {
+    is_visible
 }
 
 /// Nudges the notepad onto the main monitor once it is up.
@@ -635,7 +679,27 @@ fn install_css() {
 
 #[cfg(test)]
 mod tests {
-    use super::on_focus_change;
+    use super::{on_focus_change, on_outside_click};
+
+    /// A reported outside click dismisses an open notepad and nothing else.
+    ///
+    /// The case that must not dismiss is the same one `on_focus_change` has to
+    /// handle: a window that is not up. There is no way to provoke it through a
+    /// real compositor, because the script declines to send anything while the
+    /// window is missing -- so without a test here, changing the guard to
+    /// something that ignores visibility would look fine and would hide a
+    /// `--background` instance on the first click of the session.
+    #[test]
+    fn an_outside_click_dismisses_only_a_window_that_is_up() {
+        assert!(
+            on_outside_click(true),
+            "a visible notepad is dismissed by a click outside it"
+        );
+        assert!(
+            !on_outside_click(false),
+            "a hidden notepad has nothing to dismiss"
+        );
+    }
 
     /// Every combination, because the cases that must *not* dismiss are the
     /// whole point of the arming and cannot be provoked through a compositor.

@@ -17,6 +17,17 @@ The binary is written to `target/release/hypr-scratch`.
 install -Dm755 target/release/hypr-scratch ~/.local/bin/hypr-scratch
 ```
 
+Click-away dismissal also needs two things outside this repository:
+
+- `~/.config/hypr/scripts/hypr-scratch-outside-click.sh`, executable. It sits
+  beside `rofi-outside-click.sh`, which solves the same problem for rofi.
+- `socat` (or `python3`, which the script falls back to) to connect to the
+  notepad's socket.
+
+Both, and the two bare `mouse:272`/`mouse:273` binds in `hyprland.lua`, are
+required for the feature. Without them the notepad still works and simply never
+dismisses on a click.
+
 ## Controls
 
 - `SUPER + N`: toggle the notepad
@@ -24,9 +35,10 @@ install -Dm755 target/release/hypr-scratch ~/.local/bin/hypr-scratch
 - `Ctrl + S`: save now
 - `Tab`: insert a tab (only with no selection; with a selection it moves focus)
 
-It also closes itself when you click another window or move focus with a
-keybind. Both of those are really the same thing — it closes when it loses
-focus. See [Dismissing the notepad](#dismissing-the-notepad).
+It also closes itself when you click outside it, click another window, or move
+focus with a keybind. The first is reported by the compositor and the other two
+are really the same thing — it closes when it loses focus. See
+[Dismissing the notepad](#dismissing-the-notepad).
 
 ## Notes
 
@@ -40,21 +52,72 @@ over the note, so an interrupted write cannot truncate the existing note.
 
 ## Dismissing the notepad
 
-All four routes work: the hotkey, `Esc`, clicking another window, and moving
-focus with a keybind.
+All five routes work: the hotkey, `Esc`, clicking outside the notepad, clicking
+another window, and moving focus with a keybind.
 
-Worth being precise about how the last two work, because it is narrower than
-"click away and it goes away". There is no pointer or grab check anywhere in the
-code. Dismissal is one thing — `is-active` went false — so *clicking another
-window* dismisses the notepad only because that click gives the other window
-focus. A click that does not move focus leaves the notepad up. Clicking the
-desktop background does exactly that under Hyprland's default configuration, and
-so does clicking any window with `nofocus`. If you want the notepad to vanish on
-those, it needs a real pointer check, which is not implemented.
+The last three are two different mechanisms, and the difference is worth being
+precise about.
 
-The property watched is `GtkWindow`'s **`is-active`**, never `has-focus`.
+**Focus-away** is one thing: `GtkWindow`'s `is-active` went false. So *clicking
+another window* dismisses the notepad only because that click gives the other
+window focus, and so does a focus keybind. A click that moves no focus does
+nothing at all on this path.
 
-A fifth route exists that is not a feature: the window manager can ask the
+**Click-away** is what covers those cases, and it cannot be done from inside the
+app. GTK 4 removed the client-side pointer grab API outright — `gdk::Seat` in
+gdk4 0.11.5 has no `grab` method at all — so a window that is not already
+grabbing never hears about clicks outside itself. The notepad cannot take a grab
+to find out, because a grab is exactly what it gave up: while one is held,
+Hyprland will not move focus off the notepad, so focus-away dismissal stops
+working *and* clicks on the windows underneath are swallowed. There is no
+arrangement that observes both.
+
+Hover tracking does not cover it either. `EventControllerMotion` does report the
+pointer crossing the notepad's edges, but only on a *transition*, and the
+notepad is opened by a keybind — so the pointer is usually somewhere else already
+and never enters. Clicking the desktop background then produces no event at all.
+
+So the compositor reports it instead. `hypr-scratch-outside-click.sh`, bound to
+bare **LMB and RMB** in `hyprland.lua` with `non_consuming = true`, works out
+whether the click landed inside the notepad's rect and, if not, sends `dismiss`
+over the notepad's own socket. The app's part is three lines: read the command,
+check the window is actually up, and reuse the same hide that focus-away uses.
+It gains no geometry tracking and no JSON parsing, which is why the rect test
+lives in the script.
+
+Three things follow from that arrangement, all deliberate:
+
+- **The click still reaches whatever was underneath.** `non_consuming` is what
+  makes focusing something else and dismissing the notepad a single gesture
+  rather than two. Gate 10 asserts it rather than assuming it.
+- **The process is never killed.** The notepad has unsaved text and is expected
+  to still be there for the next hotkey, so the script only ever sends a
+  message. This is the one respect in which it differs from
+  `rofi-outside-click.sh`, which has to `pkill` because rofi has nothing to
+  save.
+- **It depends on the compositor config.** Remove the binds and the app is
+  perfectly healthy with the feature simply dead — invisible from the app, which
+  is why gate 10 checks the binds are registered and non-consuming before it
+  checks any behaviour.
+
+`hyprctl` reports both the window rect and the cursor in the layout's logical
+coordinates, so the two are directly comparable. If that ever stops being true
+the comparison inverts and *every* click reads as "inside", which looks exactly
+like the feature not existing.
+
+Two known edges, both accepted rather than guarded:
+
+- The editor has GTK's default context menu, and a menu is a separate surface
+  that can extend past the notepad's bottom-right corner. Left-clicking an item
+  that overhangs the panel dismisses the notepad. The clipboard action still
+  happens and the note is already saved, so nothing is lost.
+- Right-clicking in *another* application dismisses the notepad too, since RMB is
+  bound. That is the point of binding it, but it is a live behaviour rather than
+  an edge case.
+
+The property watched for focus-away is **`is-active`**, never `has-focus`.
+
+A sixth route exists that is not a feature: the window manager can ask the
 notepad to close, via `closewindow` or `killactive` on the published class
 `dev.maxii.HyprScratch`. That is handled as a *dismissal* — flush, hide, stop the
 request — because letting it through runs GTK's default handler, which destroys
@@ -235,7 +298,7 @@ The acceptance suite lives in `scripts/`, and needs a running Hyprland session �
 every gate is checked against the compositor, not against the app:
 
 ```sh
-./scripts/gates.sh    # nine behavioural gates
+./scripts/gates.sh    # eleven behavioural gates
 ./scripts/visual.sh   # blur and corners, each against a null control
 ./scripts/stress.sh   # repeated open/close cycles
 ```
@@ -248,10 +311,24 @@ the suite reports a clean run over a binary that fell over.
 Artifacts go to a `mktemp -d` scratch dir, so running the suites does not write
 into the source tree.
 
+Gates 10 and 11 are the click-away pair, and they are built to be falsifiable.
+Both click the same point: 11 clicks the middle of the notepad and requires it to
+stay up, 10 clicks a point that is not a window and requires it to close. The
+point in gate 10 comes from `scripts/no_focus_point.py`, which finds somewhere a
+click provably does not move focus — the status bar, or failing that bare
+wallpaper, computed from the compositor rather than hardcoded. Without that
+isolation the gate proves nothing: clicking any window moves focus, and
+focus-away dismissal would close the notepad anyway, so a completely broken
+click-away path would still pass. Gate 10 asserts the focus claim first, so if
+that ever stops holding it says so instead of quietly measuring the wrong
+mechanism. Flipping the script to always answer "inside" fails gate 10; always
+answering "outside" fails gate 11.
+
 The suite needs a live Hyprland session and these on `PATH`: `hyprctl`, `grim`,
-`wtype`, `ydotool`, and `kitty` (used only to spawn the sink window — any
-terminal would do, it just has to echo what it is sent). It moves the pointer and
-clicks, so it will fight you for the mouse; run it when you are not.
+`wtype`, `ydotool`, `kitty` (used only to spawn the sink window — any
+terminal would do, it just has to echo what it is sent), and `jq` and `socat` for
+the click-away gates. It moves the pointer and clicks, so it will fight you for
+the mouse; run it when you are not.
 
 Five rules are baked into the suite, all of them learned the hard way, and the
 first four produced *false results* while the app was behaving correctly:
@@ -325,6 +402,32 @@ Two more things about these dispatchers, both of which read as bugs:
   window up and they accumulate, one per run. That is a kitty behaviour, not a
   Hyprland one.
 
+### A Unix socket is not a file you can write to
+
+Worth its own heading, because it cost an hour and the failure is invisible by
+construction.
+
+To send the notepad a `dismiss`, the obvious shell is a redirect:
+
+```sh
+printf 'dismiss\n' > "$socket"
+```
+
+That does not work. `>` opens the path with `O_WRONLY`, and a Unix socket refuses
+that with `ENXIO` — it is not a regular file, and the only way in is `connect(2)`.
+The shell prints one line to stderr, `|| true` swallows the exit status, and the
+script finishes having achieved nothing. The click-away feature is then simply
+dead, with nothing in any log to say so, and the app is completely healthy.
+
+The fix is `socat -u - UNIX-CONNECT:"$socket"`. The `-u` matters as much as the
+connect: without it socat also waits to read a reply, and the notepad never sends
+one — it holds the connection open until its own read timeout expires, so every
+click would cost a full second.
+
+This is the same shape as every other trap in this file: a well-formed command
+that quietly does the wrong thing, caught by nothing but a test that asserts the
+effect rather than the absence of an error.
+
 ### Measuring things
 
 `hyprctl clients` reports positions in *global logical* space; `grim` captures
@@ -362,6 +465,13 @@ the running notepad instead of starting a second copy. Start it at login with
 `--background` so the toggle only has to reveal it. A second invocation sends
 `toggle` and exits, so a stale binary on `PATH` can look like a no-op — rebuild
 *and* reinstall before testing.
+
+The socket carries two line-terminated commands, `toggle\n` and `dismiss\n`. The
+reader is line-oriented rather than a fixed-length read, and that is not a style
+choice: `dismiss` is one byte longer than `toggle`, so a reader that stopped at
+`toggle`'s length would take the first 7 bytes of `dismiss\n`, fail to match,
+and drop it. Nothing is logged and the notepad simply never dismisses on a click.
+A test holds the exact bytes each sender writes against the parser.
 
 The GTK application ID is `dev.maxii.HyprScratch` and the window title is
 `hypr-scratch`, which is what the dispatches in `src/hypr.rs` address it by.

@@ -175,6 +175,19 @@ for m in json.load(sys.stdin):
     if m['x'] <= x < m['x'] + m['width'] // m['scale']:
         print(m['name']); break" "$1"
 }
+click_at() {  # $1 = logical x, $2 = logical y
+    # ydotool's absolute mode is broken on this machine, so the pointer is
+    # positioned through the compositor and the button is pressed separately.
+    hyprctl dispatch "hl.dsp.cursor.move({ x = $1, y = $2 })" >/dev/null 2>&1
+    sleep 0.3
+    ydotool click 0xC0 >/dev/null 2>&1
+}
+centre() {  # the middle of the notepad, as the compositor reports it
+    python3 -c "
+import json, sys
+at, size = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+print(at[0] + size[0] // 2, at[1] + size[1] // 2)" "$(field at)" "$(field size)" 2>/dev/null
+}
 
 trap 'sink_down; rm -rf "$WORK"' EXIT
 
@@ -310,6 +323,107 @@ else
     toggle_close
     check "closes again"             "$(open)" "closed"
     check "and the process is still just the one" "$(alive)" "1"
+fi
+
+echo "GATE 10  a click outside dismisses, even when it moves no focus"
+# The outside click cannot be detected from inside the app. GTK4 removed the
+# client-side pointer grab API, so a window that is not grabbing never hears
+# about clicks outside itself -- and the notepad must not grab, because a held
+# grab stops Hyprland moving focus off it, which would break focus-away
+# dismissal and swallow clicks on other windows. The compositor reports it
+# instead: hypr-scratch-outside-click.sh, bound to bare LMB/RMB with
+# non_consuming so the click still reaches whatever was underneath.
+#
+# The wiring is checked first and separately, because all of it is invisible from
+# the app: a bind that did not register, or one that was not non-consuming, would
+# leave the app perfectly healthy and the feature simply dead.
+SCRIPT="$HOME/.config/hypr/scripts/hypr-scratch-outside-click.sh"
+check "script exists" "$([ -f "$SCRIPT" ] && echo yes || echo no)" "yes"
+check "script is executable" "$([ -x "$SCRIPT" ] && echo yes || echo no)" "yes"
+bind_count() {  # $1 = description
+    hyprctl binds -j 2>/dev/null | python3 -c "
+import json, sys
+want = sys.argv[1]
+print(len([b for b in json.load(sys.stdin) if b.get('description') == want]))" "$1"
+}
+check "LMB bind registered" "$(bind_count 'Dismiss scratchpad notepad on outside click (LMB)')" "1"
+check "RMB bind registered" "$(bind_count 'Dismiss scratchpad notepad on outside click (RMB)')" "1"
+check "both are non-consuming" "$(hyprctl binds -j 2>/dev/null | python3 -c "
+import json, sys
+print(len([b for b in json.load(sys.stdin)
+           if (b.get('description') or '').endswith('notepad on outside click (LMB)')
+           or (b.get('description') or '').endswith('notepad on outside click (RMB)')]))")" "2"
+check "and they really are non-consuming" "$(hyprctl binds -j 2>/dev/null | python3 -c "
+import json, sys
+print(len([b for b in json.load(sys.stdin)
+           if 'notepad on outside click' in (b.get('description') or '')
+           and b.get('non_consuming')]))")" "2"
+
+# Now the behaviour, and this is the part that needs the isolation. A click on
+# any ordinary window moves focus, and focus-away dismissal would close the
+# notepad anyway -- so "clicked a thing and the notepad closed" is consistent
+# with the new path never having run at all. The click has to go somewhere that
+# demonstrably does not take focus, or the gate proves nothing.
+#
+# The point is found while the notepad is up, because the helper needs its
+# monitor and its rect, and neither is knowable once it is closed. The point
+# itself stays valid afterwards: it is chosen clear of the notepad's edges
+# precisely so that closing the notepad cannot invalidate it.
+if ! reset_notepad; then
+    echo "  FAIL  the notepad would not stay open across 3 attempts"; FAIL=1
+fi
+POINT=$(python3 no_focus_point.py 2>"$WORK"/point.err) || POINT=""
+if [ -z "$POINT" ]; then
+    echo "  FAIL  no point where a click leaves focus alone: $(cat "$WORK"/point.err)"
+    FAIL=1
+else
+    PX=${POINT%,*}; PY=${POINT#*,}
+    toggle_close
+    BEFORE=$(act)
+    echo "         $PX,$PY is not a window and should not take focus"
+    click_at "$PX" "$PY"
+    sleep 0.8
+    # If this ever fails, a status bar started taking focus and every assertion
+    # below is measuring the wrong mechanism. Said out loud so the failure is
+    # not mistaken for a regression in the notepad.
+    check "a click there does not move focus" "$(act)" "$BEFORE"
+
+    reset_notepad || { echo "  FAIL  could not reopen the notepad"; FAIL=1; }
+    wtype "GATE10-OUTSIDE"
+    for _ in $(seq 1 40); do [ "$(cat "$WORK"/v.md)" = "GATE10-OUTSIDE" ] && break; sleep 0.1; done
+    check "note written before the click" "$(cat "$WORK"/v.md)" "GATE10-OUTSIDE"
+    echo "         clicking the same point again, with the notepad up"
+    click_at "$PX" "$PY"
+    wait_state closed 40
+    check "dismissed by a click that moved no focus" "$(open)" "closed"
+    check "process survived"                   "$(alive)" "1"
+    check "note saved on the way out"          "$(cat "$WORK"/v.md)" "GATE10-OUTSIDE"
+    # The notepad must still be usable afterwards, not merely still running.
+    toggle_open
+    check "reopens after an outside click" "$(open)" "OPEN"
+    check "still takes focus"               "$(act)"  "dev.maxii.HyprScratch"
+    toggle_close
+fi
+
+echo "GATE 11  a click inside the notepad does not dismiss it"
+# The other half of the geometry test. Without it, a script that always answered
+# "outside" would pass gate 10 perfectly while making the notepad impossible to
+# click in -- which is worse than not having the feature, because the text
+# selection and the context menu both go through clicks inside the window.
+if ! reset_notepad; then
+    echo "  FAIL  the notepad would not stay open across 3 attempts"; FAIL=1
+else
+    read -r CX CY <<<"$(centre)"
+    if [ -z "${CX:-}" ]; then
+        echo "  FAIL  could not read the notepad's geometry to click inside it"; FAIL=1
+    else
+        echo "         clicking $CX,$CY, the middle of the notepad"
+        click_at "$CX" "$CY"
+        sleep 0.8
+        check "still open"    "$(open)" "OPEN"
+        check "still focused" "$(act)"  "dev.maxii.HyprScratch"
+    fi
+    toggle_close
 fi
 
 echo

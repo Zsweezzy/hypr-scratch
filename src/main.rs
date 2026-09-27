@@ -5,7 +5,7 @@ mod ui;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::Arc;
 
 use gtk4 as gtk;
 use gtk4::{gio::prelude::*, glib};
@@ -45,10 +45,10 @@ fn main() {
         .iter()
         .any(|argument| argument == "--background" || argument == "-b");
 
-    let toggle_requested = Arc::new(AtomicBool::new(false));
-    let _toggle_thread = match ipc::acquire_instance() {
+    let pending = Arc::new(ipc::PendingCommands::default());
+    let _listener_thread = match ipc::acquire_instance() {
         Ok(ipc::AcquiredInstance::Primary(instance)) => {
-            Some(instance.spawn_toggle_listener(toggle_requested.clone()))
+            Some(instance.spawn_listener(pending.clone()))
         }
         // Another instance already owns the socket. It just received our
         // toggle, so this process has nothing left to do.
@@ -82,16 +82,12 @@ fn main() {
 
     app.connect_activate({
         let ui = ui.clone();
-        let toggle_requested = toggle_requested.clone();
+        let pending = pending.clone();
         move |app| {
             if let Some(existing) = ui.borrow().as_ref() {
                 existing.toggle();
             } else {
-                *ui.borrow_mut() = Some(ui::create_window(
-                    app,
-                    toggle_requested.clone(),
-                    start_visible,
-                ));
+                *ui.borrow_mut() = Some(ui::create_window(app, pending.clone(), start_visible));
             }
         }
     });

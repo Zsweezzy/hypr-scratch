@@ -18,6 +18,59 @@ use std::{
 };
 
 const TOGGLE_MESSAGE: &[u8] = b"toggle\n";
+/// What `hypr-scratch-outside-click.sh` writes. Never sent from here -- the
+/// compositor-side script sends it -- but named anyway so the wire format has a
+/// single definition and a test can hold the script's bytes to it.
+#[cfg(test)]
+const DISMISS_MESSAGE: &[u8] = b"dismiss\n";
+
+/// The longest line accepted off the socket before the connection is given up on.
+const MAX_COMMAND_LEN: usize = 64;
+
+/// Something the notepad was asked to do.
+///
+/// `Toggle` comes from the hotkey, via `hyprctl dispatch exec` on the binary,
+/// which finds this process through the socket and sends `toggle\n`.
+/// `Dismiss` comes from `hypr-scratch-outside-click.sh` in `hyprland.lua`, bound
+/// to bare LMB and RMB, which sends `dismiss\n` once it has established that a
+/// click landed outside this window's rect. Neither can be sent by the app to
+/// itself, and the two are deliberately distinct rather than one command with an
+/// argument: a click inside the notepad and a hotkey press are the same event as
+/// far as the compositor is concerned, and only the script's geometry check tells
+/// them apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Command {
+    Toggle,
+    Dismiss,
+}
+
+/// Commands that have arrived but not yet been applied by the GTK main loop.
+///
+/// Two atomics rather than a channel. The GTK side has to poll either way, and
+/// every channel type here would mean a dependency for what is two bits of
+/// state. The listener thread only ever sets; the main loop only ever takes.
+#[derive(Default)]
+pub struct PendingCommands {
+    toggle: AtomicBool,
+    dismiss: AtomicBool,
+}
+
+impl PendingCommands {
+    fn request(&self, command: Command) {
+        match command {
+            Command::Toggle => self.toggle.store(true, Ordering::SeqCst),
+            Command::Dismiss => self.dismiss.store(true, Ordering::SeqCst),
+        }
+    }
+
+    pub fn take_toggle(&self) -> bool {
+        self.toggle.swap(false, Ordering::SeqCst)
+    }
+
+    pub fn take_dismiss(&self) -> bool {
+        self.dismiss.swap(false, Ordering::SeqCst)
+    }
+}
 
 pub enum AcquiredInstance {
     Primary(PrimaryInstance),
@@ -31,7 +84,7 @@ pub struct PrimaryInstance {
 }
 
 impl PrimaryInstance {
-    pub fn spawn_toggle_listener(self, toggle_requested: Arc<AtomicBool>) -> JoinHandle<()> {
+    pub fn spawn_listener(self, pending: Arc<PendingCommands>) -> JoinHandle<()> {
         let Self {
             listener,
             path,
@@ -43,8 +96,8 @@ impl PrimaryInstance {
                     continue;
                 };
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
-                if read_toggle_message(&mut stream).unwrap_or(false) {
-                    toggle_requested.store(true, Ordering::SeqCst);
+                if let Ok(Some(command)) = read_command(&mut stream) {
+                    pending.request(command);
                 }
             }
             let _ = fs::remove_file(&path);
@@ -53,10 +106,40 @@ impl PrimaryInstance {
     }
 }
 
-fn read_toggle_message(reader: &mut impl Read) -> io::Result<bool> {
-    let mut message = [0_u8; TOGGLE_MESSAGE.len()];
-    reader.read_exact(&mut message)?;
-    Ok(message == TOGGLE_MESSAGE)
+/// Reads one newline-terminated command, or `None` if the line is not one.
+///
+/// Line-oriented rather than a fixed-length read so a second command can be
+/// added without the reader caring how long it is. That matters more than it
+/// looks: a fixed `read_exact` of `toggle\n`'s length would read the first 7
+/// bytes of `dismiss\n` as `dismiss`, not `toggle`, compare unequal and throw
+/// the message away -- and an unmatched command is silent, so the feature would
+/// simply never fire. Existing senders are unaffected, since `toggle\n` still
+/// parses to the same command.
+fn read_command(reader: &mut impl Read) -> io::Result<Option<Command>> {
+    let mut line = Vec::new();
+    let mut byte = [0_u8; 1];
+    loop {
+        match reader.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) if byte[0] == b'\n' => break,
+            Ok(_) => {
+                if line.len() == MAX_COMMAND_LEN {
+                    // Never a real command. Stop reading rather than buffer a
+                    // peer that is not going to send a newline.
+                    return Ok(None);
+                }
+                line.push(byte[0]);
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+
+    Ok(match line.as_slice() {
+        b"toggle" => Some(Command::Toggle),
+        b"dismiss" => Some(Command::Dismiss),
+        _ => None,
+    })
 }
 
 pub fn acquire_instance() -> io::Result<AcquiredInstance> {
@@ -165,35 +248,148 @@ fn socket_path() -> io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AcquiredInstance, TOGGLE_MESSAGE, acquire_instance_at, read_toggle_message};
+    use super::{
+        AcquiredInstance, Command, DISMISS_MESSAGE, MAX_COMMAND_LEN, PendingCommands,
+        TOGGLE_MESSAGE, acquire_instance_at, read_command,
+    };
     use std::fs;
-    use std::io::{self, Read, Write};
+    use std::io::{self, Cursor, Read, Write};
     use std::os::unix::net::UnixStream;
     use std::thread;
 
+    /// Each command must raise its own flag and no other.
+    ///
+    /// The two are a pair of independent booleans read by two separate branches
+    /// of the GTK poll, so a mix-up is invisible: a click that opened the
+    /// notepad instead of closing it, or a hotkey that closed it. Nothing fails,
+    /// nothing is logged, and the feature just does not work.
+    #[test]
+    fn each_command_raises_only_its_own_flag() {
+        for (command, toggle, dismiss) in [
+            (Command::Toggle, true, false),
+            (Command::Dismiss, false, true),
+        ] {
+            let pending = PendingCommands::default();
+            pending.request(command);
+
+            assert_eq!(pending.take_toggle(), toggle, "{command:?} raised toggle");
+            assert_eq!(
+                pending.take_dismiss(),
+                dismiss,
+                "{command:?} raised dismiss"
+            );
+            // Taking must consume, or a flag would re-fire on every poll.
+            assert!(!pending.take_toggle(), "{command:?} was consumed");
+            assert!(!pending.take_dismiss(), "{command:?} was consumed");
+        }
+    }
+
+    /// The whole path a `dismiss` takes, over a real socket.
+    ///
+    /// The listener thread loops forever, so this drives the same three steps it
+    /// performs per connection rather than the loop itself: read the line, parse
+    /// it, raise the flag. Reading from a real `UnixStream` rather than a
+    /// `Cursor` is the point -- a socket is free to hand over a partial line, and
+    /// the byte-at-a-time loop has to cope with that.
+    #[test]
+    fn a_dismiss_written_to_a_socket_ends_up_as_a_pending_command() {
+        let pending = PendingCommands::default();
+        let (mut sender, mut receiver) = UnixStream::pair().expect("socket pair should be created");
+
+        let writer = thread::spawn(move || {
+            sender
+                .write_all(DISMISS_MESSAGE)
+                .expect("message should write");
+            sender
+                .shutdown(std::net::Shutdown::Write)
+                .expect("sender should close its side");
+        });
+
+        let Some(command) = read_command(&mut receiver).expect("the socket should read") else {
+            panic!("dismiss should have been recognised");
+        };
+        writer.join().expect("writer should finish");
+        pending.request(command);
+
+        assert!(pending.take_dismiss());
+        assert!(!pending.take_toggle());
+    }
+
+    /// Feeds a message one byte per read.
+    ///
+    /// A socket is not obliged to hand over a whole write in one read, so a
+    /// reader that assumes it does is wrong in a way that only shows up when
+    /// the timing is unlucky.
+    struct Fragmented<'a> {
+        bytes: &'a [u8],
+        position: usize,
+    }
+
+    impl Read for Fragmented<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.position == self.bytes.len() {
+                return Ok(0);
+            }
+            buffer[0] = self.bytes[self.position];
+            self.position += 1;
+            Ok(1)
+        }
+    }
+
     #[test]
     fn reads_fragmented_toggle_messages() {
-        struct Fragmented<'a> {
-            bytes: &'a [u8],
-            position: usize,
-        }
-
-        impl Read for Fragmented<'_> {
-            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-                if self.position == self.bytes.len() {
-                    return Ok(0);
-                }
-                buffer[0] = self.bytes[self.position];
-                self.position += 1;
-                Ok(1)
-            }
-        }
-
         let mut reader = Fragmented {
             bytes: TOGGLE_MESSAGE,
             position: 0,
         };
-        assert!(read_toggle_message(&mut reader).expect("fragmented message should be read"));
+        assert_eq!(
+            read_command(&mut reader).expect("fragmented message should be read"),
+            Some(Command::Toggle)
+        );
+    }
+
+    /// Both messages the senders can write, asserted against the exact bytes on
+    /// the wire.
+    ///
+    /// `dismiss` is the one worth having. It is a byte longer than `toggle`, so
+    /// a reader that stopped at a fixed length would take the first 7 bytes of
+    /// `dismiss\n`, fail to match, and drop it -- silently, since an unmatched
+    /// command is not an error. The notepad would then simply never dismiss on a
+    /// click, with nothing in any log to say why.
+    #[test]
+    fn every_message_a_sender_writes_parses_to_its_own_command() {
+        for (message, want) in [
+            (TOGGLE_MESSAGE, Command::Toggle),
+            (DISMISS_MESSAGE, Command::Dismiss),
+        ] {
+            let mut reader = Cursor::new(message);
+            assert_eq!(
+                read_command(&mut reader).expect("message should read"),
+                Some(want),
+                "{:?}",
+                String::from_utf8_lossy(message)
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_and_unterminated_lines_are_ignored_rather_than_guessed_at() {
+        for message in [
+            &b"nonsense\n"[..],
+            // A peer that connects and says nothing must not be read as a
+            // command.
+            b"",
+            // Long enough to set the cap off, with no terminator anywhere.
+            &[b'x'; MAX_COMMAND_LEN + 1],
+        ] {
+            let mut reader = Cursor::new(message);
+            assert_eq!(
+                read_command(&mut reader).expect("reading should not fail"),
+                None,
+                "{:?}",
+                String::from_utf8_lossy(message)
+            );
+        }
     }
 
     #[test]
