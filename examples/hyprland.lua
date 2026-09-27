@@ -16,9 +16,26 @@
 --     bind = ,mouse:272,exec,/home/you/.local/bin/hypr-scratch --outside-click,non_consuming
 --     bind = ,mouse:273,exec,/home/you/.local/bin/hypr-scratch --outside-click,non_consuming
 --
--- The `.*` on both ends of the class is load-bearing: Hyprland matches a rule
--- against the *whole* class, not a substring. A bare "HyprScratch" matches
--- nothing, and the symptom is not an error but a notepad that opens tiled.
+-- The class is anchored at both ends, and that is the whole point of the line.
+--
+-- Hyprland matches a rule against the *whole* class, not a substring, so a bare
+-- "HyprScratch" matches nothing at all and the symptom is not an error: it is a
+-- notepad that opens tiled. That is why the `.*` is needed on a loose match.
+--
+-- But `.*HyprScratch.*` is anchored at neither end, and it is the more tempting
+-- thing to write, so it is worth being precise. This repository's own test sink
+-- is called `dev.maxii.HyprScratchSink` -- the notepad's class with "Sink" on the
+-- end -- and an unanchored match floats, centres and pins it too. It did exactly
+-- that here: the sink came up already pinned, the suite's own `pin` toggle then
+-- unpinned it, it fell under a fullscreen browser, and every click meant for it
+-- landed on the browser instead. Two unrelated-looking failures, one unanchored
+-- regex. If you install a second window whose class contains "HyprScratch", the
+-- loose form will float and pin that one as well.
+--
+-- The `[[...]]` is not decoration. A backslash before a dot is an invalid escape
+-- sequence in a Lua string, quoted either way, and `luac -p` rejects the file
+-- outright; the long-bracket form is literal, so the regex can be written here
+-- exactly as it reads. (`'\\.'` works too, if you prefer to double it.)
 --
 -- `rounding = 10` here must equal the `border-radius` in data/style.css. The
 -- compositor's `rounding` does not clip this window -- the arc is painted by GTK
@@ -27,7 +44,7 @@
 
 hl.window_rule({
 	name = "hypr-scratch-overlay",
-	match = { class = ".*HyprScratch.*" },
+	match = { class = [[^dev\.maxii\.HyprScratch$]] },
 	float = true,
 	center = true,
 	pin = true,

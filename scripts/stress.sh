@@ -30,7 +30,17 @@ open() { hyprctl clients -j 2>/dev/null | python3 -c "
 import json, os, sys
 want = os.environ['NOTEPAD_CLASS']
 print('OPEN' if any(c['class'] == want for c in json.load(sys.stdin)) else 'closed')"; }
-act() { hyprctl activewindow -j 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["class"])'; }
+act() { hyprctl activewindow -j 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    print('(unreadable)'); raise SystemExit(0)
+# Same reasoning as gates.sh: an empty object means nothing holds the focus, and
+# is a state this desktop passes through. Indexing the key raised a KeyError, so
+# every cycle reported an empty class and the run finished 20/20 on focus
+# failures while the notepad was in fact opening and closing correctly.
+print(d.get('class') or '(none)')"; }
 pid() { pgrep -x hypr-scratch 2>/dev/null | head -1; }
 
 # Detach every invocation. Called bare, `hypr-scratch` is a request to toggle

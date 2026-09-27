@@ -30,12 +30,19 @@ STYLE_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/hypr-scratch
 STYLE=$STYLE_DIR/style.css
 if [ -e "$STYLE" ]; then
     echo "Left your existing $STYLE alone."
-elif [ -f "$ROOT/data/style.css" ]; then
+else
+    # No existence test on the source, and deliberately so. `cargo build` above
+    # has already run under `set -e`, and it can only succeed if
+    # `include_str!("../data/style.css")` resolved, so the file is known to be
+    # there. This used to carry a third case for a missing data/style.css,
+    # promising that the built-in stylesheet would be used instead -- but the
+    # build fails long before this point, with a clear `couldn't read` error
+    # naming src/ui.rs, so the fallback was unreachable and the message described
+    # a recovery that cannot happen. A branch that says something untrue is
+    # worse than no branch.
     install -d "$STYLE_DIR"
     install -m 644 "$ROOT/data/style.css" "$STYLE"
     echo "Wrote a starting $STYLE -- edit it to change the colours."
-else
-    echo "No data/style.css to copy; the built-in stylesheet will be used."
 fi
 
 cat <<EOF

@@ -52,26 +52,7 @@ cd "$HERE"
 # and `Image.getpixel` takes integers, and rounding is the honest way to say
 # "approximately here" rather than truncating toward zero and being off by one
 # at a fractional origin.
-physical_geom() { python3 -c "
-import json, os, subprocess, sys
-want = os.environ['NOTEPAD_CLASS']
-win = next((c for c in json.loads(subprocess.run(
-        ['hyprctl', 'clients', '-j'], capture_output=True, text=True).stdout)
-    if c['class'] == want), None)
-if win is None:
-    sys.exit('the notepad is not open')
-mons = json.loads(subprocess.run(
-    ['hyprctl', 'monitors', '-j'], capture_output=True, text=True).stdout)
-mon = next((m for m in mons if m['id'] == win['monitor']), None)
-if mon is None:
-    # The client names a monitor id the monitor list does not have. Cropping
-    # against a guess here is how a run ends up reporting a confident zero.
-    sys.exit(f\"no monitor with id {win['monitor']}\")
-sc = float(mon['scale'])
-x, y = win['at']
-w, h = win['size']
-px, py = round((x - mon['x']) * sc), round((y - mon['y']) * sc)
-print(mon['name'], px, py, round(w * sc), round(h * sc))"; }
+physical_geom() { physical_geom_of "$NOTEPAD_CLASS"; }
 
 is_open() { hyprctl clients -j 2>/dev/null | python3 -c "
 import json, os, sys

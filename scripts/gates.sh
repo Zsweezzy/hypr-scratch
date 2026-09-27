@@ -42,12 +42,26 @@ SINK_Y=880
 # so, instead of clicking a coordinate and reporting whatever lay under it.
 SINK_PX=""
 SINK_PY=""
+SINK_PX_W=""
+SINK_PY_H=""
+SINK_STATE=""
 
 open() { hyprctl clients -j 2>/dev/null | python3 -c "
 import json, os, sys
 want = os.environ['NOTEPAD_CLASS']
 print('OPEN' if any(c['class'] == want for c in json.load(sys.stdin)) else 'closed')"; }
-act() { hyprctl activewindow -j 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["class"])'; }
+act() { hyprctl activewindow -j 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    print('(unreadable)'); raise SystemExit(0)
+# An empty object is what Hyprland reports when *nothing* holds the focus, which
+# is a real state this desktop passes through -- not an error, and not a window
+# that stole anything. Reading it as a missing key raised a KeyError, and twelve
+# of those tracebacks scrolled past before the gate that cared about them, which
+# is the noise that teaches people to ignore a suite's output.
+print(d.get('class') or '(none)')"; }
 field() { hyprctl clients -j 2>/dev/null | python3 -c "
 import json, os, sys
 want = os.environ['NOTEPAD_CLASS']
@@ -80,6 +94,37 @@ wait_state() {  # $1 = want, $2 = timeout in tenths of a second
         sleep 0.1; i=$((i + 1))
     done
     return 1
+}
+# Sends keystrokes to one named window, and refuses to send them anywhere else.
+#
+# `wtype` has no target: it delivers to whatever the compositor considers
+# focused, full stop. The notepad and the sink are normally focused when these
+# run, so it read as safe -- until a browser on the desktop took focus part-way
+# through a run and the test string was delivered to it instead. The note came
+# back with a partial prefix from an earlier save, gates 3, 4, 5, 6 and 10
+# failed for reasons that had nothing to do with the notepad, and one of them
+# passed for the wrong reason (see GATE 5).
+#
+# So the target is checked at the moment of the keystroke, not once at the start
+# of the run. A focus thief can arrive between gates, and this is the boundary
+# where that stops mattering: the suite's business is testing hypr-scratch, and
+# injecting test text into whatever window the user happens to have open is a
+# worse outcome than an aborted run.
+#
+# Fatal, not a warning, because there is no safe way to continue. A run that has
+# already typed into the wrong window has no trustworthy result left to report.
+type_into() {  # $1 = the class that must have the focus, $2.. = wtype arguments
+    local want=$1 have
+    shift
+    have=$(act)
+    if [ "$have" != "$want" ]; then
+        echo "  FAIL  refusing to type: '$have' has the focus, not '$want'."
+        echo "        Keystrokes are delivered to the focused window with no way to"
+        echo "        name a target, so typing now would put this test text into a"
+        echo "        window the suite does not own. Close or unfocus it, then re-run."
+        exit 1
+    fi
+    wtype "$@"
 }
 # The focused window's class, sampled until two reads in a row agree.
 #
@@ -184,6 +229,173 @@ for c in json.load(sys.stdin):
         print(x + w // 2, y + h // 2, x, y, w, h)
         break" 2>/dev/null
 }
+
+# The sink's crop box in physical pixels: x, y, w, h, ready to hand to a
+# screenshot crop. Trims the compositor's reserved top strip so the status bar's
+# own repainting cannot be mistaken for the sink changing. Fails, rather than
+# guessing, if the sink is not open or reports a monitor that is not there.
+sink_crop_box() {
+    local geom mon px py pw ph res v
+    geom=$(physical_geom_of "$SINK_CLASS") || return 1
+    # Exactly five fields, read by name: an extra or missing one would otherwise
+    # be swallowed by the last variable and quietly shift the crop.
+    read -r mon px py pw ph <<<"$geom" || return 1
+    # Each field validated on its own. An earlier version joined two of them with
+    # a colon and matched `*:*` to catch a missing field -- which of course also
+    # matches the separator, so it rejected every rectangle the compositor
+    # reported and the gate could never have passed.
+    for v in "$px" "$py" "$pw" "$ph"; do
+        case ${v:-} in ''|*[!0-9]*) return 1 ;; esac
+    done
+    [ -n "${mon:-}" ] || return 1
+    [ "$pw" -gt 0 ] && [ "$ph" -gt 0 ] || return 1
+    res=$(reserved_top_px "$mon") || return 1
+    if [ "$py" -lt "$res" ]; then
+        ph=$((ph - (res - py)))
+        py=$res
+    fi
+    [ "$ph" -gt 0 ] || return 1
+    echo "$px $py $pw $ph"
+}
+
+# A point on the sink that the notepad is not covering: x, y, then the size of
+# the exposed area it was taken from.
+#
+# The notepad is pinned above every other window, so wherever the two rectangles
+# overlap, a click belongs to the notepad no matter what the sink's geometry
+# says. The exposed area is the sink's rectangle minus the notepad's, and it
+# splits into at most four pieces -- above, below, left of, right of. The
+# largest is used, so the click lands as far from both edges as it can.
+#
+# Fails when there is no exposed area, or only a sliver too thin to hit
+# reliably, rather than returning a point that would land on the notepad or on a
+# window border. A minimum of 8 logical pixels: below that, whether the click
+# reaches the sink at all is a coin toss, and a coin toss is not a measurement.
+sink_exposed_point() {
+    python3 -c "
+import json, subprocess, sys
+sink, note = sys.argv[1], sys.argv[2]
+clients = json.loads(subprocess.run(
+    ['hyprctl', 'clients', '-j'], capture_output=True, text=True).stdout)
+def rect(cls):
+    c = next((c for c in clients if c['class'] == cls), None)
+    if c is None:
+        return None
+    (x, y), (w, h) = c['at'], c['size']
+    return (x, y, x + w, y + h)
+s = rect(sink)
+if s is None:
+    sys.exit('the sink is not open')
+sx0, sy0, sx1, sy1 = s
+n = rect(note)
+pieces = []
+if n is None:
+    pieces.append(s)
+else:
+    nx0, ny0, nx1, ny1 = n
+    if sy0 < ny0: pieces.append((sx0, sy0, sx1, min(sy1, ny0)))
+    if sy1 > ny1: pieces.append((sx0, max(sy0, ny1), sx1, sy1))
+    if sx0 < nx0: pieces.append((sx0, sy0, min(sx1, nx0), sy1))
+    if sx1 > nx1: pieces.append((max(sx0, nx1), sy0, sx1, sy1))
+pieces = [p for p in pieces if p[2] - p[0] >= 8 and p[3] - p[1] >= 8]
+if not pieces:
+    sys.exit('the notepad leaves no reachable part of the sink')
+b = max(pieces, key=lambda p: (p[2] - p[0]) * (p[3] - p[1]))
+print((b[0] + b[2]) // 2, (b[1] + b[3]) // 2, b[2] - b[0], b[3] - b[1])
+" "$SINK_CLASS" "$NOTEPAD_CLASS"; }
+# The sink's float and pin flags, as "true true". Exits non-zero if it is gone.
+sink_state() {
+    hyprctl clients -j 2>/dev/null | python3 -c "
+import json, sys
+c = next((c for c in json.load(sys.stdin) if c['class'] == '$SINK_CLASS'), None)
+if c is None:
+    sys.exit(1)
+print(str(bool(c.get('floating'))).lower(), str(bool(c.get('pinned'))).lower())" 2>/dev/null
+}
+
+# Puts the sink into a known float and pin state, instead of toggling it.
+#
+# `float` and `pin` are toggles, not setters. Dispatching one when the window is
+# already in the wanted state turns it *off*, and the sink is created floated and
+# pinned before the suite touches it -- by the notepad's own window rule, whose
+# class match is the substring regex `.*HyprScratch.*`, which matches the sink's
+# class too. So the suite's `pin` was unpinning the sink it had just arranged.
+#
+# An unpinned sink sits underneath whatever else is on that monitor. Here a
+# fullscreen browser covered the whole of it, every click meant for the sink
+# landed on the browser, and gates 3 and 5 reported "focus handed back: got
+# firefox, want the sink". That reads as the app failing to hand focus over on a
+# click, and is really the suite having clicked a different window and then
+# blaming the notepad for the result.
+#
+# So the current state is read first and only changed when it is not already
+# right. As with the placement, what matters afterwards is the state the
+# compositor reports, not the dispatches that were sent.
+sink_set_state() {  # $1 = want float, $2 = want pin
+    local sel="class = \"$SINK_CLASS\"" cur
+    cur=$(sink_state) || return 1
+    if [ "${cur%% *}" != "$1" ]; then
+        hyprctl dispatch "hl.dsp.window.float({ $sel })" >/dev/null 2>&1
+        sleep 0.2
+    fi
+    cur=$(sink_state) || return 1
+    if [ "${cur##* }" != "$2" ]; then
+        hyprctl dispatch "hl.dsp.window.pin({ $sel })" >/dev/null 2>&1
+        sleep 0.2
+    fi
+    sink_state
+}
+
+# A position for the sink that puts it entirely inside the usable area of the
+# monitor it is already on: x, y, w, h, all logical. Fails if it cannot fit.
+#
+# The requested placement was routinely out of bounds and nothing said so. A sink
+# 400px tall at y=880 on a 1080px-tall usable area hangs 200px off the bottom.
+# Hyprland accepts the move, and `hyprctl clients` then cheerfully reports the
+# window at exactly the position that was asked for, because that is where its
+# top-left corner is. The window is only half on the screen.
+#
+# This stayed invisible for as long as gate 5 cropped the whole monitor and never
+# looked at the sink's own rectangle. Now that it does, the crop runs off the
+# edge of the capture and the gate refuses to score -- correctly, and with a much
+# less obvious cause than "the sink is in a stupid place".
+#
+# The monitor is the one the sink is actually on and the usable area has the
+# reserved strips taken off it, so this holds on a different size, scale or bar.
+#
+# Note on the embedded Python: it lives inside a double-quoted shell string, so a
+# double quote anywhere in it -- including in a comment -- ends the string early
+# and hands the rest to the shell as commands. `bash -n` does not catch that,
+# because the result is still valid shell; it just is not the program that was
+# meant. Single quotes inside, or escape them.
+sink_fit() {
+    python3 -c "
+import json, subprocess, sys
+sink = sys.argv[1]
+def hypr(*a):
+    return json.loads(subprocess.run(
+        ['hyprctl', *a, '-j'], capture_output=True, text=True).stdout)
+win = next((c for c in hypr('clients') if c['class'] == sink), None)
+if win is None:
+    sys.exit('the sink is not open')
+mon = next((m for m in hypr('monitors') if m['id'] == win['monitor']), None)
+if mon is None:
+    sys.exit('no monitor with id ' + str(win['monitor']))
+sc = float(mon['scale'])
+# hyprctl reports a monitor's width and height in physical pixels but its x and y
+# in logical ones, so the size has to be divided through and the origin must not.
+# Integer division on purpose: a float here reaches the move dispatch as a
+# fractional coordinate, which some parsers take and some do not.
+mw, mh = int(mon['width'] / sc), int(mon['height'] / sc)
+left, top, right, bottom = (int(v) for v in (mon.get('reserved') or [0, 0, 0, 0]))
+ux0, uy0 = mon['x'] + left, mon['y'] + top
+ux1, uy1 = mon['x'] + mw - right, mon['y'] + mh - bottom
+(x, y), (w, h) = win['at'], win['size']
+if w > ux1 - ux0 or h > uy1 - uy0:
+    sys.exit(f'the sink is {w}x{h} and the usable area is only {ux1-ux0}x{uy1-uy0}')
+print(min(max(x, ux0), ux1 - w), min(max(y, uy0), uy1 - h), w, h)
+" "$SINK_CLASS"; }
+
 sink_up() {
     sink_down
     setsid "$SINK_BIN" >/dev/null 2>&1 </dev/null &
@@ -214,10 +426,39 @@ sink_up() {
     # a syntax error there that makes the whole dispatch a no-op while still
     # printing ok, which is a spectacularly quiet way to do nothing.
     local sel="class = \"$SINK_CLASS\""
-    hyprctl dispatch "hl.dsp.window.float({ $sel })" >/dev/null 2>&1
-    hyprctl dispatch "hl.dsp.window.pin({ $sel })" >/dev/null 2>&1
+    # Set the state rather than dispatching the toggles blindly; see sink_set_state.
+    if ! SINK_STATE=$(sink_set_state true true); then
+        echo "  FAIL  the sink's float and pin state could not be read or set, so"
+        echo "        every click below would land on whatever is underneath it"
+        FAIL=1
+        return 1
+    fi
+    if [ "$SINK_STATE" != "true true" ]; then
+        echo "  FAIL  the sink is float=$SINK_STATE after asking for 'true true'."
+        echo "        It would sit underneath other windows and the clicks meant for"
+        echo "        it would land on them instead."
+        FAIL=1
+        return 1
+    fi
     hyprctl dispatch "hl.dsp.window.move({ $sel, x = $SINK_X, y = $SINK_Y })" >/dev/null 2>&1
     sleep 0.6
+    # The request above is only a preference. Clamp it into the monitor's usable
+    # area and ask again, so the sink is never left hanging off the bottom of the
+    # screen where a screenshot of it cannot be cropped.
+    local fit
+    if ! fit=$(sink_fit); then
+        echo "  FAIL  $fit"
+        FAIL=1
+        return 1
+    fi
+    local fx fy fw fh
+    read -r fx fy fw fh <<<"$fit"
+    if [ "$fx" != "$SINK_X" ] || [ "$fy" != "$SINK_Y" ]; then
+        echo "         asked for ($SINK_X,$SINK_Y), which is off the usable area;"
+        echo "         using ($fx,$fy) instead"
+        hyprctl dispatch "hl.dsp.window.move({ $sel, x = $fx, y = $fy })" >/dev/null 2>&1
+        sleep 0.6
+    fi
     # The placement above is a *request*, and the click below used to assume it
     # was obeyed. It is not always: a `move` onto a coordinate the compositor
     # adjusts, a window that opens at its own idea of a size, and a browser window
@@ -236,8 +477,54 @@ sink_up() {
         return 1
     fi
     read -r SINK_PX SINK_PY SINK_AT_X SINK_AT_Y SINK_W SINK_H <<<"$SINK_GEOM"
+    # Post-condition, not another request: the sink must now actually be inside
+    # the usable area. A `move` the compositor declines leaves the readback
+    # unchanged, and finding that out here names the cause, where the same fact
+    # discovered at the crop in gate 5 reads as a screenshot problem.
+    local check
+    if ! check=$(sink_fit); then
+        echo "  FAIL  $check"
+        FAIL=1
+        return 1
+    fi
+    read -r fx fy fw fh <<<"$check"
+    if [ "$fx" != "$SINK_AT_X" ] || [ "$fy" != "$SINK_AT_Y" ]; then
+        echo "  FAIL  the sink is at ($SINK_AT_X,$SINK_AT_Y) but the usable area needs"
+        echo "        ($fx,$fy). Part of it is off-screen, so a screenshot of it cannot"
+        echo "        be cropped and the click point may be off-screen too."
+        FAIL=1
+        return 1
+    fi
     echo "         sink is $SINK_W x $SINK_H at ($SINK_AT_X,$SINK_AT_Y);"
-    echo "         clicking its middle, $SINK_PX,$SINK_PY"
+    # The middle of the sink is the obvious click target and it is the wrong one.
+    # The notepad is 640x480, pinned above every other window, and sits in the
+    # middle of the monitor; a sink placed anywhere near the middle has its centre
+    # *underneath* the notepad. Clicking there hits the notepad, which -- already
+    # being focused, and being the window meant to dismiss on focus loss rather
+    # than on a click inside itself -- simply stays open.
+    #
+    # That is not a theory. It produced a run where the identical click closed the
+    # notepad in one gate and missed in the next, purely on where the tiling landed
+    # that second, and the second read as "the app stopped responding to clicks",
+    # which is the worst thing this suite could possibly say.
+    #
+    # So the point is chosen inside the sink and outside the notepad, from the
+    # geometry the compositor reports at this instant. A sink left with no exposed
+    # area is reported as such rather than clicked at anyway.
+    local point
+    if ! point=$(sink_exposed_point); then
+        echo "  FAIL  the sink is entirely covered by the notepad, so there is no"
+        echo "        point on it a click could reach"
+        FAIL=1
+        return 1
+    fi
+    read -r SINK_PX SINK_PY SINK_PX_W SINK_PY_H <<<"$point"
+    if [ "$SINK_PX_W" -lt "$SINK_W" ] || [ "$SINK_PY_H" -lt "$SINK_H" ]; then
+        echo "         the notepad covers part of it; clicking $SINK_PX,$SINK_PY"
+        echo "         in the exposed ${SINK_PX_W}x${SINK_PY_H} area, not its middle"
+    else
+        echo "         clicking its middle, $SINK_PX,$SINK_PY"
+    fi
 }
 sink_down() {
     # Dispose of the sink by the PID we started, not through a Hyprland
@@ -309,35 +596,74 @@ trap 'sink_down; rm -rf "$WORK"' EXIT
 # focus-ownership read reported the launcher, which is exactly the shape of
 # misleading failure this suite is not supposed to produce.
 #
-# So the condition is tested once, up front, and named. Failing here is honest;
-# letting it surface as four unrelated FAILs twenty seconds later is not.
+# So the condition is tested up front, and named. Failing here is honest; letting
+# it surface as eleven unrelated FAILs twenty seconds later is not.
+#
+# Every sample has to agree, and the sampling does not stop early. An earlier
+# version broke out of the loop on the first correct reading, which made this
+# check a claim that the notepad *had* the focus rather than that it can *keep*
+# it -- and the window between that reading and GATE 1 is exactly where a focus
+# thief arrives. It is also why the run that motivated all of this produced a
+# single honest line here and eleven misleading ones below it: the verdict was
+# recorded and the run continued anyway, and every gate after it was then
+# measuring a desktop the suite did not control.
 if ! reset_notepad; then
     echo "  FAIL  the notepad would not stay open across 3 attempts"
     FAIL=1
 fi
 THIEF=""
-HOLDS=""
-for _ in $(seq 1 8); do
-    sleep 0.4
+HOLDS=yes
+NONE_SEEN=""
+for _ in $(seq 1 12); do
+    sleep 0.3
     NOW=$(act)
-    if [ "$NOW" = "$NOTEPAD_CLASS" ]; then
-        HOLDS=yes
-        break
+    if [ "$NOW" != "$NOTEPAD_CLASS" ]; then
+        THIEF=$NOW
+        HOLDS=""
+        [ "$NOW" = "(none)" ] && NONE_SEEN=yes
     fi
-    THIEF=$NOW
 done
-# The verdict is a flag, not a comparison against THIEF. Comparing would read the
-# success path as failure, because the loop breaks without ever setting THIEF --
-# which is exactly what happened, and reported the notepad stealing its own
-# focus from itself with the thief's name left blank.
-if [ -z "$HOLDS" ] && [ "$(open)" = OPEN ]; then
-    echo "  FAIL  '${THIEF:-nothing}' keeps taking the focus back while the"
-    echo "        notepad is up. Every gate below that asserts who holds the"
-    echo "        focus is measuring that window, not the notepad. Close or"
-    echo "        unfocus it and re-run."
-    FAIL=1
+# Nothing holding the focus at all is a different problem from something taking
+# it, and it is not always a broken desktop: this one passes through a state
+# where `hyprctl activewindow` reports an empty object, usually just after a
+# fullscreen window goes away. One directional focus is enough to leave it, so
+# try that and say so, rather than reporting a focus thief that does not exist.
+if [ -n "$NONE_SEEN" ] && [ -z "${THIEF##(none)}" ]; then
+    echo "         (nothing held the focus; asking the compositor for some)"
+    hyprctl dispatch 'hl.dsp.focus({ direction = "left" })' >/dev/null 2>&1
+    sleep 0.5
+    HOLDS=yes
+    THIEF=""
+    for _ in $(seq 1 12); do
+        sleep 0.3
+        NOW=$(act)
+        if [ "$NOW" != "$NOTEPAD_CLASS" ]; then
+            THIEF=$NOW
+            HOLDS=""
+        fi
+    done
 fi
-reset_notepad || true
+# Fatal, not a tally. A run that cannot keep the focus cannot check focus
+# ownership, and `type_into` below will refuse to deliver keystrokes into it, so
+# continuing would only produce a longer report of the same broken environment.
+if [ -z "$HOLDS" ] || [ "$(open)" != OPEN ]; then
+    if [ "$THIEF" = "(none)" ]; then
+        echo "  FAIL  nothing holds the focus on this desktop, not even the notepad."
+        echo "        That is a state Hyprland passes through rather than a window"
+        echo "        taking focus, and it left every gate below measuring nothing."
+        echo "        Click any window once, then re-run."
+    else
+        echo "  FAIL  '${THIEF:-nothing}' takes the focus away from the notepad while it"
+        echo "        is up, and the notepad stays up. Every gate below that asserts who"
+        echo "        holds the focus would be measuring that window instead, and the"
+        echo "        suite refuses to type test text into it. Stopped here on purpose:"
+        echo "        the rest of this run could not be trusted."
+        echo
+        echo "        Close or unfocus that window and re-run. If you do not know what"
+        echo "        it is, it is the one named above."
+    fi
+    exit 1
+fi
 
 echo "GATE 1  opens as a floating, pinned, centred overlay"
 if ! reset_notepad; then
@@ -356,7 +682,7 @@ echo "         expected $WANT, got $GOT  ($NOTE)"
 check "exact centre"       "$GOT" "$WANT"
 
 echo "GATE 2  typing lands in the note, and does not dismiss"
-wtype "GATE2-TYPE"
+type_into "$NOTEPAD_CLASS" "GATE2-TYPE"
 for _ in $(seq 1 40); do [ "$(cat "$WORK"/v.md)" = "GATE2-TYPE" ] && break; sleep 0.1; done
 check "note written"  "$(cat "$WORK"/v.md)"  "GATE2-TYPE"
 check "still open"    "$(open)"      "OPEN"
@@ -392,35 +718,74 @@ click_sink
 wait_state closed 40
 check "notepad closed"   "$(open)" "closed"
 check "sink focused"     "$(stable_focus)"  "$SINK_CLASS"
-# Diff the whole of the sink's monitor, not a window-sized crop: the tiling can
-# reflow between reading the geometry and taking the shot, and a stale crop
-# silently compares two identical regions. Skip the top strip, where the status
-# bar ticks.
+
+# The evidence has to be attributable to the sink, so this crops to the sink's
+# own rectangle rather than to its whole monitor.
+#
+# The monitor-wide crop was there for a real reason -- a stale rect silently
+# compares two identical regions -- but it made the gate answer a different
+# question: "did anything on this screen change?" rather than "did the keystrokes
+# reach the sink?". Those are not the same, and the run that exposed it showed
+# how: a browser on the same monitor held focus, the test string went into its
+# address bar, the page reflowed, and this gate reported PASS with 3.8 million
+# changed pixels. A gate that can pass because of a window it is not testing is
+# worse than no gate, because it is believed.
+#
+# So the rect is read fresh, twice, and the gate refuses to score at all if the
+# sink moved in between -- that is the failure the wide crop was hiding, and it
+# deserves to be said out loud rather than averaged over. The reserved top strip
+# comes out of the crop too, so the bar's own repainting cannot stand in for the
+# sink.
+BOX_BEFORE=$(sink_crop_box) || { echo "  FAIL  could not locate the sink to crop"; FAIL=1; }
 MON=$(monitor_at "$SINK_PX")
 grim -o "$MON" "$WORK"/before.png 2>/dev/null
-wtype "AFTER-CLOSE"
+type_into "$SINK_CLASS" "AFTER-CLOSE"
 sleep 2
 grim -o "$MON" "$WORK"/after.png 2>/dev/null
-CHANGED=$(python3 -c "
-import os
+BOX_AFTER=$(sink_crop_box) || { echo "  FAIL  the sink is gone; cannot attribute the change"; FAIL=1; }
+
+if [ -z "$BOX_BEFORE" ] || [ -z "$BOX_AFTER" ]; then
+    echo "  FAIL  could not read the sink's rectangle, so the keystrokes cannot be"
+    echo "        attributed to it"; FAIL=1
+elif [ "$BOX_BEFORE" != "$BOX_AFTER" ]; then
+    echo "  FAIL  the sink moved between the two screenshots"
+    echo "          before: $BOX_BEFORE"
+    echo "          after:  $BOX_AFTER"
+    echo "        Comparing those would measure two different regions."
+    FAIL=1
+else
+    CHANGED=$(python3 -c "
+import os, sys
 from PIL import Image, ImageChops
 work = os.environ['WORK']
+px, py, pw, ph = (int(v) for v in sys.argv[1:5])
 a = Image.open(os.path.join(work, 'before.png')).convert('RGB')
 b = Image.open(os.path.join(work, 'after.png')).convert('RGB')
-box = (0, 100, a.width, a.height)
+box = (px, py, px + pw, py + ph)
+if box[2] > a.width or box[3] > a.height:
+    sys.exit(f'crop {box} is outside the {a.width}x{a.height} capture')
 a, b = a.crop(box), b.crop(box)
-print(sum(1 for p in ImageChops.difference(a, b).get_flattened_data() if max(p) > 12))" 2>/dev/null)
-if [ "${CHANGED:-0}" -gt 200 ]; then
-    echo "  PASS  typed text appeared in the sink on $MON ($CHANGED px changed)"
-else
-    echo "  FAIL  the sink did not receive the keystrokes (${CHANGED:-0} px)"; FAIL=1
+print(sum(1 for p in ImageChops.difference(a, b).get_flattened_data() if max(p) > 12))
+" $BOX_BEFORE 2>&1)
+    case $CHANGED in
+        ''|*[!0-9]*)
+            echo "  FAIL  could not diff the sink's pixels: $CHANGED"; FAIL=1 ;;
+        *)
+            if [ "$CHANGED" -gt 200 ]; then
+                echo "  PASS  typed text appeared in the sink on $MON ($CHANGED px changed"
+                echo "        within its own rect $BOX_BEFORE, not across the monitor)"
+            else
+                echo "  FAIL  the sink did not receive the keystrokes ($CHANGED px changed"
+                echo "        within its own rect $BOX_BEFORE)"; FAIL=1
+            fi ;;
+    esac
 fi
 
 echo "GATE 6  Esc closes it"
 toggle_open
 check "reopened"  "$(open)" "OPEN"
 check "has focus" "$(act)"  "$NOTEPAD_CLASS"
-wtype -k "Escape" 2>/dev/null
+type_into "$NOTEPAD_CLASS" -k "Escape" 2>/dev/null
 wait_state closed 40
 check "closed"    "$(open)" "closed"
 
@@ -445,25 +810,18 @@ if [ -z "$CSS_R" ]; then
     FAIL=1
 fi
 GLOBAL_R=$(hyprctl getoption decoration:rounding 2>/dev/null | head -1 | sed 's/int: //')
-# The rule's own `rounding`, out of whatever config this user has. The two
-# spellings are both accepted: `rounding = 10` in a Lua `hl.window_rule({...})`
-# and `rounding, 10` in a plain `windowrulev2` keyword list. An empty result is
-# not a pass -- a rule that restates nothing leaves the window's corners decided
-# by which of the two numbers the compositor happens to apply, which is the
-# mismatch this gate exists to catch.
-if sed -n '/name = "hypr-scratch-overlay"/,/^})/p' "$HYPRLAND_CONFIG" |
-        grep -q .; then
-    RULE_R=$(sed -n '/name = "hypr-scratch-overlay"/,/^})/p' "$HYPRLAND_CONFIG" |
-             sed -n 's/.*rounding = \([0-9]*\).*/\1/p' | head -1)
-else
-    RULE_R=$(sed -n 's/.*rounding, *\([0-9]*\).*/\1/p' "$HYPRLAND_CONFIG" | head -1)
-fi
+# The rule's own `rounding`, out of whatever config this user has. Both spellings
+# are accepted, and both are handled in lib.sh's rule_rounding -- an empty result
+# is not a pass, because a rule that restates nothing leaves the window's corners
+# decided by which of the two numbers the compositor happens to apply, which is
+# the mismatch this gate exists to catch.
 if [ ! -f "$HYPRLAND_CONFIG" ]; then
     echo "  FAIL  no Hyprland config at $HYPRLAND_CONFIG (set HYPR_SCRATCH_HYPRLAND_CONFIG)"
     FAIL=1
     RULE_R=missing
-elif [ -z "$RULE_R" ]; then
-    echo "  FAIL  no rounding found for the notepad in $HYPRLAND_CONFIG"
+elif ! RULE_R=$(rule_rounding 2>&1); then
+    echo "  FAIL  $RULE_R"
+    RULE_R=missing
     FAIL=1
 fi
 check "CSS radius == decoration.rounding" "$CSS_R" "$GLOBAL_R"
@@ -592,7 +950,7 @@ else
         echo "  PASS  a click there does not move focus"
 
         reset_notepad || { echo "  FAIL  could not reopen the notepad"; FAIL=1; }
-        wtype "GATE10-OUTSIDE"
+        type_into "$NOTEPAD_CLASS" "GATE10-OUTSIDE"
         for _ in $(seq 1 40); do [ "$(cat "$WORK"/v.md)" = "GATE10-OUTSIDE" ] && break; sleep 0.1; done
         check "note written before the click" "$(cat "$WORK"/v.md)" "GATE10-OUTSIDE"
         echo "         clicking the same point again, with the notepad up"

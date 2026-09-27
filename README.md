@@ -232,7 +232,7 @@ In Lua:
 ```lua
 hl.window_rule({
 	name = "hypr-scratch-overlay",
-	match = { class = ".*HyprScratch.*" },
+	match = { class = [[^dev\.maxii\.HyprScratch$]] },
 	float = true,
 	center = true,
 	pin = true,
@@ -244,6 +244,16 @@ hl.window_rule({
 	suppress_event = "maximize fullscreen",
 })
 ```
+
+Anchor that class at both ends. Hyprland matches a rule against the *whole* class,
+so a bare `HyprScratch` matches nothing and the symptom is not an error but a
+notepad that opens tiled — which is why a loose `.*HyprScratch.*` is the tempting
+thing to write, and why it is worth not writing. It also matches anything else
+whose class merely *contains* `HyprScratch`: this repository's own test sink is
+`dev.maxii.HyprScratchSink`, and an unanchored rule floats, centres and pins it
+too. The `[[...]]` is needed because `\.` is an invalid escape inside a Lua
+string, quoted either way, and `luac -p` rejects the file outright; the long-bracket
+form is literal, so the regex can be written as it reads.
 
 Every key above is checked against Hyprland's own list of window-rule effects
 (`src/desktop/rule/windowRule/WindowRuleEffectContainer.cpp`). Two keys that
@@ -444,8 +454,9 @@ window class, never by substring — a substring test also matches the sink, who
 class starts with the same string, and reports the sink's size, position and
 pinned state as the notepad's.
 
-Five rules are baked into the suite, all of them learned the hard way, and the
-first four produced *false results* while the app was behaving correctly:
+A dozen rules are baked into the suite. Every one of them was learned from a run
+that produced a *wrong answer* — a false pass or a false failure — while the app
+was behaving correctly, which is the only kind of bug worth writing down:
 
 - **Never assume the desktop's layout.** Earlier revisions hardcoded both the
   coordinate they clicked and the window they expected to be behind the
@@ -454,9 +465,9 @@ first four produced *false results* while the app was behaving correctly:
   captured one monitor while clicking a point derived from another, which passed
   only while the sink happened to be on the other workspace. Gates 3 and 5 now
   use a sink window the suite owns, floated, pinned and placed, so the click is
-  guaranteed to land on it and it displays what it is sent. That also stopped the
-  suite typing test keystrokes into whatever the user happened to have open,
-  which is both a bad place to send test input and a poor diff target.
+  guaranteed to land on it and it displays what it is sent. That is what stopped
+  the suite typing into a *terminal*; it did not, on its own, stop the suite
+  typing into whatever else you had open — see the `wtype` rule below.
 - **A placement request is not a placement.** The sink is asked for
   `700x400 at (1980,880)` and comes back `951x514 at (1926,560)`, which is
   entirely ordinary: the compositor and the toolkit each have their own idea of
@@ -466,7 +477,45 @@ first four produced *false results* while the app was behaving correctly:
   "focus handed back: got firefox, want the sink". That reads as the suite
   having clicked the wrong thing and is not even wrong, because the sink was
   not there. The point is now read out of the compositor after placing, and the
-  gate prints the rectangle it actually got, so the two can be compared.
+  gate prints the rectangle it actually got, so the two can be compared. The
+  placement is then clamped into the monitor's *usable* area and the result
+  checked, because a 400px-tall sink at y=880 on a 1080px-tall screen hangs 200px
+  off the bottom — the compositor accepts that, `hyprctl clients` reports it at
+  exactly the position requested (that is where its top-left corner is), and the
+  window is only half on the screen. Nothing said so until gate 5 started cropping
+  to the sink's own rectangle and refused to score a crop that ran off the capture.
+- **`pin` and `float` are toggles, not setters.** The suite dispatched them to
+  put the sink where it wanted it, and thereby *unpinned* it: the notepad's own
+  window rule matches the sink's class as a substring, so the sink was already
+  floated and pinned before the suite touched it, and asking again switched both
+  off. An unpinned sink sits underneath everything else. Here a fullscreen
+  browser covered the whole monitor, every click meant for the sink landed on the
+  browser, and gates 3 and 5 reported "focus handed back: got firefox, want the
+  sink" — which reads as the app failing to hand focus over on a click, and is
+  really the suite having clicked a different window and blaming the notepad.
+  State is now read first and only changed when it is not already right, and the
+  result is verified rather than assumed from the dispatches that were sent.
+- **A click point has to be a pixel the sink actually owns.** The middle of the
+  sink is the obvious choice and it is frequently wrong. The notepad is 640x480,
+  pinned above every other window, and centred; a sink placed anywhere near the
+  middle has its centre *underneath* it. The click then lands on the notepad,
+  which is already focused and is meant to dismiss on focus loss rather than on a
+  click inside itself, so it simply stays open. This produced a run where the
+  identical click closed the notepad in one gate and missed in the next, purely
+  on where the tiling landed, and the miss read as "the app stopped responding to
+  clicks". The point is now chosen inside the sink and outside the notepad, from
+  the geometry the compositor reports at that instant.
+- **A gate's evidence has to be attributable to what it is testing.** Gate 5
+  proves the keyboard reaches the window behind the notepad, and it measured that
+  by diffing the sink's whole *monitor*. That is a different question — "did
+  anything on this screen change?" — and it answered "yes" for the wrong reason:
+  the browser held focus, the test string went into its address bar, the page
+  reflowed, and the gate reported PASS with 3.8 million changed pixels. A gate that
+  can pass because of a window it is not testing is worse than no gate, because
+  it is believed. It now crops to the sink's own rectangle, reads that rectangle
+  twice and refuses to score if the sink moved in between, and trims the reserved
+  strip where the status bar repaints itself. A change elsewhere on the monitor
+  now counts as exactly zero pixels.
 - **A guard written with `&&` and `||` fails the wrong way when the tool is
   absent.** `command -v luac && luac -p cfg || fail` reads as "lint it if you
   can, otherwise complain", and does the opposite: with no `luac` installed the
@@ -501,12 +550,28 @@ first four produced *false results* while the app was behaving correctly:
   after a click. Those read the wrong window, and the run produced three FAILs
   naming the notepad and the sink, neither of which was at fault — while the
   behavioural half of the same gates still passed, the click really did reach
-  the sink. So the suite now tests the condition once up front, names the window
-  that is taking focus, and says plainly that the focus-ownership gates below it
-  are measuring that window. A precondition that fails is a hard stop, not a
-  warning: gate 10 used to print FAIL for its isolation check and then go on to
-  print PASS for the assertions that isolation was supposed to license, which is
-  a false pass produced by the very gate meant to prevent them.
+  the sink. So the suite now samples the condition across a window of time up
+  front — every sample has to agree, because one correct reading only proves the
+  notepad *had* the focus, not that it can *keep* it — names the window taking
+  it, and stops the run there. Stopping is the point: continuing produced eleven
+  FAILs naming the notepad and the sink, neither at fault, and then typed the
+  next test string into the browser. A precondition that fails is a hard stop,
+  not a warning: gate 10 used to print FAIL for its isolation check and then go on
+  to print PASS for the assertions that isolation was supposed to license, which
+  is a false pass produced by the very gate meant to prevent them.
+- **`wtype` has no target, so the suite has to check one itself.** Keystrokes go
+  to whatever the compositor considers focused, with no way to name a window. The
+  notepad and the sink are normally focused when these run, so this read as safe
+  — and this file used to claim the suite had stopped it, which was not true. The
+  claim came from replacing a terminal with a window the suite owns, which is a
+  real improvement but says nothing about *focus*: with a browser holding focus,
+  the test string went into its address bar, the note came back with a partial
+  prefix from an earlier save, and eleven gates failed for reasons that had
+  nothing to do with the notepad. Checking the target at the moment of the
+  keystroke, rather than once at the start of the run, is the boundary that
+  matters — a focus thief can arrive between gates. It is fatal rather than a
+  warning: a run that has already typed into the wrong window has no trustworthy
+  result left to report.
 - **Read the focus twice, and let it settle.** A window releasing focus does so
   asynchronously, so a single `hyprctl activewindow` right after the notepad
   closes can still name the window that *was* focused. That became the baseline
@@ -605,14 +670,17 @@ A blur change needs a fresh window, so restart the notepad rather than toggling
 it. A/B screenshots settle it, but only against a null control: two shots in the
 same state give the noise floor, and a difference only a little above that is
 not evidence. On this build the null is 80 changed pixels at a mean absolute
-difference of 0.03, and blur on versus off is about 28,700 px at 3.8 — three
+difference of 0.03, while blur on versus off measures *tens of thousands* of
+pixels at a mean absolute difference in the low single digits — two to three
 orders of magnitude of margin, at the shipped alpha of 0.86. (It was far larger
 at 0.72, but a panel you can see less through hides more of the blur rather than
 strengthening it; see
 [The one dial that is not what it seems](#the-one-dial-that-is-not-what-it-seems).)
-Rounded deliberately: the figures move by a few tens of pixels between runs for
-no reason anyone can name, and quoting them to five significant figures would be
-claiming a precision the measurement does not have.
+Rounded hard, and deliberately not quoted to five significant figures: the effect
+moves by tens of percent between runs, because how much a blurred panel changes
+depends on what is behind it, and a number that precise is not one this
+measurement can support. Compare against the null from the same run, never
+against a figure remembered from an earlier one.
 
 For the corners, `scripts/measure.py` fits a circle to one and reports the radius
 in logical px. Take the radius from a control window too, because the question

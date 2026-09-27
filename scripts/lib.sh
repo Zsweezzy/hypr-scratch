@@ -42,6 +42,63 @@ require_command() {
 # regression in the app.
 export NOTEPAD_CLASS=dev.maxii.HyprScratch
 
+# A window's rectangle in *physical* pixels on its own monitor: the monitor's
+# name, then x, y, width, height, ready to hand to a screenshot crop.
+#
+# Logical and physical coordinates are not interchangeable here. `hyprctl`
+# reports `at` and `size` in logical pixels, and `grim -o` captures in physical
+# ones, so a crop built from the values the compositor just printed lands in the
+# wrong place on any scaled monitor -- and, worse, lands in *some* valid place,
+# so it silently measures a patch of wallpaper instead of the window.
+#
+# Shared by both scripts that crop a window. The monitor is looked up by the id
+# the client reports, and a missing monitor is fatal rather than a fallback: a
+# guess here is how a run ends up reporting a confident zero.
+physical_geom_of() {  # $1 = window class -> "name px py pw ph", or exits
+    python3 -c "
+import json, os, subprocess, sys
+want = sys.argv[1]
+win = next((c for c in json.loads(subprocess.run(
+        ['hyprctl', 'clients', '-j'], capture_output=True, text=True).stdout)
+    if c['class'] == want), None)
+if win is None:
+    sys.exit(f'no window of class {want} is open')
+mons = json.loads(subprocess.run(
+    ['hyprctl', 'monitors', '-j'], capture_output=True, text=True).stdout)
+mon = next((m for m in mons if m['id'] == win['monitor']), None)
+if mon is None:
+    sys.exit(f'no monitor with id {win[\"monitor\"]}')
+sc = float(mon['scale'])
+x, y = win['at']
+w, h = win['size']
+px, py = round((x - mon['x']) * sc), round((y - mon['y']) * sc)
+print(mon['name'], px, py, round(w * sc), round(h * sc))" "$1"; }
+
+# A monitor's reserved-height at the top, in physical pixels.
+#
+# The status bar lives in the reserved area and repaints itself constantly -- a
+# clock ticks, a workspace indicator breathes. Any pixel diff taken across a
+# window that overlaps it picks up that churn and attributes it to whatever was
+# being tested. Read from the compositor rather than assumed, so it is right on a
+# machine with no bar, a taller one, or a different scale.
+reserved_top_px() {  # $1 = monitor name
+    python3 -c "
+import json, subprocess, sys
+name = sys.argv[1]
+mon = next((m for m in json.loads(subprocess.run(
+        ['hyprctl', 'monitors', '-j'], capture_output=True, text=True).stdout)
+    if m['name'] == name), None)
+if mon is None:
+    sys.exit(f'no monitor named {name}')
+# reserved is [left, top, right, bottom] -- the top edge is index 1. Index 0 is
+# the left one, which is 0 on a monitor with no left-hand bar, so reading the
+# wrong slot returns a confident 0 and silently disables the trim instead of
+# failing. That is the entire reason this is a checked lookup.
+res = mon.get('reserved') or []
+if len(res) != 4:
+    sys.exit(f'monitor {name} has a {len(res)}-entry reserved field, expected 4')
+print(round(int(res[1]) * float(mon['scale'])))" "$1"; }
+
 # Builds the test-only sink if it is not already there.
 #
 # The sink exists so the suite does not need a terminal emulator installed,
@@ -85,9 +142,75 @@ require_hyprland_config() {
     fi
 }
 
-# Marks the notepad's window rule inside that config. Both spellings are
-# recognised because both are real: `hl.window_rule({...})` is a Lua config, and
-# `windowrulev2 = ...` is a plain one. The sink's class starts with the notepad's
-# as a substring, which is why a rule for the sink must not be picked up here --
-# the marker is the exact rule *name* or the notepad class on its own.
-RULE_MARKERS=("hypr-scratch-overlay" "$NOTEPAD_CLASS")
+# The corner radius the notepad's own window rule states, in either dialect.
+# Prints it, or exits with a reason.
+#
+# This replaces a one-line sed that could only ever match one of the two
+# spellings, and it was the wrong one. Hyprland's syntax is `rounding 10`, space
+# separated; the pattern required a comma after `rounding`, so it matched nothing
+# in any real plain `.conf` -- including the spelling this repository's own
+# example ships. For anyone not using a Lua config the gate could not pass, and
+# reported "no rounding found for the notepad", which reads as the user's config
+# being at fault when the config was fine and the check was not. The same gate had
+# already been bitten in this path once, by `windowrulev2?`.
+#
+# Both spellings are accepted here: `rounding = 10` inside a Lua
+# `hl.window_rule({...})` and `rounding 10` in a plain rule. The notepad's class
+# has to appear in the same rule, so a rule belonging to some other window cannot
+# be read as its own -- this repository's test sink is the standing example, and
+# its class begins with the notepad's.
+rule_rounding() {
+    python3 -c "
+import re, sys
+path, cls = sys.argv[1], sys.argv[2]
+try:
+    with open(path, encoding='utf-8', errors='replace') as fh:
+        text = fh.read()
+except OSError as exc:
+    sys.exit('cannot read ' + path + ': ' + str(exc.strno))
+
+def class_patterns(rule):
+    # Every way a class can be written across the two dialects and the quoting
+    # styles: class:foo unquoted (plain .conf), class = \"foo\", class = 'foo',
+    # and class = [[foo]]. All four are real; missing one means a whole dialect
+    # reports \"no rule found\" on a config that has the rule in front of it.
+    out = []
+    out += re.findall(r'class\s*:\s*([^,\n]+)', rule)
+    out += re.findall(r'class\s*[:=]\s*\"([^\"]*)\"', rule)
+    out += re.findall(r\"class\s*[:=]\s*'([^']*)'\", rule)
+    out += re.findall(r'class\s*[:=]\s*\[\[(.*?)\]\]', rule, re.S)
+    return [p.strip() for p in out]
+
+def covers(rule):
+    # Does this rule's class pattern actually match the notepad's class? Asking
+    # the regex is the only honest test. Testing whether the class *text* merely
+    # appears inside the rule looks equivalent and is not: this repository's test
+    # sink is called dev.maxii.HyprScratchSink, so its class contains the
+    # notepad's as a substring, and a containment test reads the sink's radius as
+    # the notepad's. The same reasoning rejects a rule for the sink outright,
+    # since ^(dev\.maxii\.HyprScratchSink)\$ does not match dev.maxii.HyprScratch.
+    for pat in class_patterns(rule):
+        try:
+            if re.search(pat, cls):
+                return True
+        except re.error:
+            # Not a regex Python can read. Fall back to a literal test on the
+            # unescaped text, which errs towards refusing rather than matching.
+            if cls in pat.replace(chr(92), ''):
+                return True
+    return False
+
+number = re.compile(r'rounding\s*[=,:\s]\s*(\d+)')
+rules = [m.group(0) for m in
+         re.finditer(r'hl\.window_rule\s*\(\s*\{.*?\n?\}?\s*\)', text, re.S)]
+rules += re.findall(r'^[ \t]*windowrule(?:v2)?[ \t]*=.*\$', text, re.M)
+for rule in rules:
+    if not covers(rule):
+        continue
+    found = number.search(rule)
+    if found:
+        print(found.group(1))
+        break
+else:
+    sys.exit('no window rule matching ' + cls + ' states a rounding in ' + path)
+" "$HYPRLAND_CONFIG" "$NOTEPAD_CLASS"; }
