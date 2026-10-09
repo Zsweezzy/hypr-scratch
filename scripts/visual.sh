@@ -21,6 +21,14 @@ FAIL=0
 require_command SCRATCH_BIN hypr-scratch
 require_hyprland_config
 
+# Developer-only visual check: every gate here shoots the screen, so unlike
+# `gates.sh` there is nothing that survives without a screenshot tool. Refuse
+# rather than fail later with an empty capture.
+if ! command -v grim >/dev/null 2>&1; then
+    echo "This is the developer visual check; it needs 'grim' on PATH." >&2
+    exit 2
+fi
+
 # Restore the config on the way out, whatever happened. This script edits the
 # user's Hyprland config to A/B the blur rule, and a run that dies between
 # "rewrite" and "rewrite back" would otherwise leave `no_blur = true` behind --

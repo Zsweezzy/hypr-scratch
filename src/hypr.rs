@@ -74,6 +74,28 @@ pub fn move_and_center(class: &str, monitor: &str) {
     }
 }
 
+/// Builds the command that moves the pointer to `(x, y)`, as Lua Hyprland
+/// evaluates.
+///
+/// Pure and separate from the sending for the same reason as `commands_for`:
+/// the command string is the whole contract, and a wrong one is not a crash.
+/// `hl.dsp.cursor.move` is the spelling already proven in `scripts/gates.sh`,
+/// which positions the pointer this way because `ydotool`'s absolute mode is
+/// broken on this machine; the compositor is the one channel that works.
+fn cursor_command(x: i32, y: i32) -> String {
+    format!("hl.dsp.cursor.move({{ x = {x}, y = {y} }})")
+}
+
+/// Moves the pointer to `(x, y)`, the centre of the notepad.
+///
+/// Wraps the same fire-and-forget dispatch as `move_and_center`. The point of
+/// the warp is that the notepad is opened by a keybind with the pointer
+/// somewhere else, where a stray click would hit the `--outside-click` handler
+/// and dismiss the window the user had only just asked for.
+pub fn move_cursor(x: i32, y: i32) {
+    dispatch(&cursor_command(x, y));
+}
+
 /// Sends one command, ignoring both the reply and any failure.
 ///
 /// Fire and forget, silently. This is a cosmetic placement nudge, and a
@@ -194,7 +216,7 @@ fn socket_path() -> io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{commands_for, is_plain};
+    use super::{commands_for, cursor_command, is_plain};
 
     #[test]
     fn accepts_the_values_the_notepad_actually_sends() {
@@ -233,6 +255,18 @@ mod tests {
         let commands = commands_for("dev.Zsweezzy.HyprScratch", "DP-2").unwrap();
         assert!(commands[0].contains("window.move"));
         assert!(commands[1].contains("window.center"));
+    }
+
+    #[test]
+    fn the_cursor_command_targets_the_notepad_centre() {
+        // The spacing is part of the contract: this reaches a Lua interpreter,
+        // and the braces and commas have to read the way Hyprland's own examples
+        // do. A missing space is harmless to Lua and still worth pinning, because
+        // the point of this test is that the string is exactly the proven one.
+        assert_eq!(
+            cursor_command(419, 439),
+            r#"hl.dsp.cursor.move({ x = 419, y = 439 })"#
+        );
     }
 
     #[test]

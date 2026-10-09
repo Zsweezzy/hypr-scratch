@@ -110,8 +110,10 @@ The suites in `scripts/` need a live Hyprland session:
 ./scripts/stress.sh   # repeated open/close cycles
 ```
 
-They need `hyprctl`, `grim`, `wtype`, and `ydotool` on `PATH`, and they move the
-pointer and inject input, so run them when you are not using the mouse.
+They need `hyprctl`, `wtype`, and `ydotool` on `PATH`, and they move the
+pointer and inject input, so run them when you are not using the mouse. `grim`
+is optional and developer-only: `visual.sh` needs it, and one pixel-diff gate
+in `gates.sh` uses it but is skipped when it is missing.
 
 ## License
 

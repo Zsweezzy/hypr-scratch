@@ -17,6 +17,7 @@ use gtk4::{
 use crate::{
     hypr,
     ipc::PendingCommands,
+    outside,
     store::{NoteStore, expand_home},
 };
 
@@ -54,6 +55,15 @@ const AUTOSAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 /// How long after mapping to ask Hyprland to move the notepad onto the main
 /// monitor. Long enough for the window rules to have been applied.
 const PLACEMENT_DELAY: Duration = Duration::from_millis(80);
+
+/// How long after mapping to warp the pointer into the notepad.
+///
+/// Deliberately longer than `PLACEMENT_DELAY`: the warp reads the notepad's
+/// rectangle back from the compositor, so it has to run after `move_and_center`
+/// has been dispatched and the compositor has applied it. Warping on the
+/// pre-placement rectangle would put the pointer at the centre of wherever the
+/// rule happened to map the window, which is not where it stays.
+const CURSOR_WARP_DELAY: Duration = Duration::from_millis(160);
 
 /// How often the socket thread's flags are applied.
 ///
@@ -190,6 +200,7 @@ pub fn create_window(
     install_close_flush(&ui);
     install_focus_dismissal(&ui);
     install_placement(&ui);
+    install_cursor_warp(&ui);
 
     // The socket thread only sets flags; the GTK main loop applies them.
     {
@@ -369,6 +380,33 @@ fn install_placement(ui: &Rc<ScratchUi>) {
                 && let Some(target) = target.as_deref()
             {
                 hypr::move_and_center(WINDOW_CLASS, target);
+            }
+            ControlFlow::Break
+        });
+    });
+}
+
+/// Warps the pointer into the notepad once it is up, so the first stray click
+/// after opening does not dismiss it.
+///
+/// Runs after `install_placement` has had its turn: the warp reads the
+/// notepad's rectangle back from the compositor, so it has to be the *final*
+/// rectangle, which is why `CURSOR_WARP_DELAY` is longer than `PLACEMENT_DELAY`.
+///
+/// The visibility re-check is the same one `install_placement` makes, for the
+/// same reason: a double-tap of the hotkey or an `Esc` inside the delay means
+/// the notepad is already gone, and warping the pointer to a window that is no
+/// longer there would move it for nothing.
+fn install_cursor_warp(ui: &Rc<ScratchUi>) {
+    let signal_ui = ui.clone();
+    ui.window.connect_map(move |_| {
+        // Cloned rather than reached back through `signal_ui`, which the outer
+        // closure owns and cannot lend to a `move` closure. Same as
+        // `install_placement`.
+        let window = signal_ui.window.clone();
+        glib::timeout_add_local(CURSOR_WARP_DELAY, move || {
+            if window.is_visible() {
+                outside::warp_into_notepad();
             }
             ControlFlow::Break
         });

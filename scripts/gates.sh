@@ -32,6 +32,12 @@ FAIL=0
 . "$HERE/lib.sh"
 require_command SCRATCH_BIN hypr-scratch
 require_sink
+# `grim` is a developer-only screenshot tool, not something a user of the app
+# needs. The suite uses it in exactly one place -- GATE 5's pixel diff, to prove
+# the keystrokes reached the sink -- and that gate is skipped without it rather
+# than failing. Detected once here so every later use can branch on the flag.
+HAVE_GRIM=0
+command -v grim >/dev/null 2>&1 && HAVE_GRIM=1
 SINK_X=1980
 SINK_Y=880
 # Where to click the sink, filled in by `sink_up` from the window's real
@@ -807,6 +813,9 @@ check "sink focused"     "$(stable_focus)"  "$SINK_CLASS"
 # deserves to be said out loud rather than averaged over. The reserved top strip
 # comes out of the crop too, so the bar's own repainting cannot stand in for the
 # sink.
+if [ "$HAVE_GRIM" = 0 ]; then
+    echo "  SKIP  grim is not installed; the sink pixel-diff needs a screenshot tool"
+else
 BOX_BEFORE=$(sink_crop_box) || { echo "  FAIL  could not locate the sink to crop"; FAIL=1; }
 MON=$(monitor_at "$SINK_PX")
 grim -o "$MON" "$WORK"/before.png 2>/dev/null
@@ -850,6 +859,7 @@ print(sum(1 for p in ImageChops.difference(a, b).get_flattened_data() if max(p) 
                 echo "        within its own rect $BOX_BEFORE)"; FAIL=1
             fi ;;
     esac
+fi
 fi
 
 echo "GATE 6  Esc closes it"

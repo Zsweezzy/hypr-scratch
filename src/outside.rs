@@ -56,6 +56,18 @@ impl Rect {
     pub fn contains(&self, x: i32, y: i32) -> bool {
         x >= self.left && x <= self.right && y >= self.top && y <= self.bottom
     }
+
+    /// The middle pixel of the rectangle, as the compositor's logical
+    /// coordinates.
+    ///
+    /// `right` and `bottom` are inclusive, so this floors toward the top-left.
+    /// That is the point: an even-sided rectangle has no single middle pixel,
+    /// and the lower of the two middles is still inside `contains`, which is
+    /// what keeps a warp and the dismissal test agreeing about where the
+    /// notepad is.
+    pub fn centre(&self) -> (i32, i32) {
+        ((self.left + self.right) / 2, (self.top + self.bottom) / 2)
+    }
 }
 
 /// Whether a click at `point` should dismiss the notepad.
@@ -93,6 +105,31 @@ pub fn handle_click() {
     if should_dismiss(point, notepad_rect()) {
         ipc::send(Command::Dismiss);
     }
+}
+
+/// Moves the pointer to the middle of the notepad, so a click that was meant for
+/// somewhere else does not immediately dismiss the window just opened.
+///
+/// The notepad is opened by a keybind, so the pointer is wherever the user left
+/// it. `--outside-click` is bound to bare LMB and RMB on the whole desktop, so a
+/// stray click with the pointer still parked on another window would dismiss the
+/// notepad before it was ever used. Warping the pointer into the window removes
+/// that failure rather than papering over it, and it is the same coordinate
+/// space the dismissal uses: both read `notepad_rect()`, so the point the pointer
+/// lands on is one `Rect::contains` accepts.
+///
+/// Gated on `is_running` so the check costs one `stat` when the notepad is not
+/// up, the same cheap guard `handle_click` opens with; without it every warp
+/// would pay for a `hyprctl clients -j` query whose answer is already known.
+pub fn warp_into_notepad() {
+    if !ipc::is_running() {
+        return;
+    }
+    let Some(rect) = notepad_rect() else {
+        return;
+    };
+    let (x, y) = rect.centre();
+    hypr::move_cursor(x, y);
 }
 
 /// Where the pointer is, as the compositor sees it.
@@ -209,6 +246,13 @@ mod tests {
     fn a_hidden_notepad_is_never_dismissed() {
         assert!(!should_dismiss((0, 0), None));
         assert!(!should_dismiss((419, 439), None));
+    }
+
+    /// The warp target and the point the tests above call "the middle" have to
+    /// be the same pixel, or the pointer lands where a click would dismiss.
+    #[test]
+    fn the_panel_centre_is_the_middle_pixel() {
+        assert_eq!(PANEL.centre(), (419, 439));
     }
 
     /// Zero is not a border case to be handled at the call site; it is a reason to
