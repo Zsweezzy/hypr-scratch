@@ -83,7 +83,8 @@ with a line number.
 - `Tab` — insert a tab when there is no selection.
 
 Clicking outside the notepad, clicking another window, or moving focus away
-dismisses it.
+dismisses it. Opening the notepad moves the pointer into it, so a stray click on
+another window does not dismiss it the moment it appears.
 
 ## Notes
 
