@@ -904,7 +904,7 @@ echo "GATE 9  a window-manager close is a dismissal, not a quit"
 # process outlives it, so the next toggle called present() on a dead widget and
 # the notepad stopped working until it was restarted -- silently. Reachable from
 # outside, because the class is documented: closewindow or killactive on
-# dev.maxii.HyprScratch is enough.
+# dev.Zsweezzy.HyprScratch is enough.
 #
 # The notepad is focused when this runs, and cannot be made open-but-unfocused:
 # focus loss is itself a dismissal, so the two states are exclusive. That does

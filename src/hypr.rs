@@ -101,7 +101,7 @@ fn dispatch(command: &str) {
 /// this is belt and braces: the socket carries Lua that Hyprland evaluates, and
 /// a stray quote would be code execution in the compositor.
 ///
-/// `.` is allowed because the window class is `dev.maxii.HyprScratch` and
+/// `.` is allowed because the window class is `dev.Zsweezzy.HyprScratch` and
 /// nothing else. Excluding it does not fail loudly -- `move_and_center` returns
 /// early and the notepad is simply never placed, so it opens wherever the rule
 /// mapped it. Every character that could end the string or start a new Lua
@@ -218,11 +218,11 @@ mod tests {
         // reliable as the string handed to `set_title`.
         assert_eq!(
             move_command,
-            r#"hl.dsp.window.move({ window = "class:dev.maxii.HyprScratch", monitor = "DP-1" })"#
+            r#"hl.dsp.window.move({ window = "class:dev.Zsweezzy.HyprScratch", monitor = "DP-1" })"#
         );
         assert_eq!(
             center_command,
-            r#"hl.dsp.window.center({ window = "class:dev.maxii.HyprScratch" })"#
+            r#"hl.dsp.window.center({ window = "class:dev.Zsweezzy.HyprScratch" })"#
         );
     }
 
@@ -230,7 +230,7 @@ mod tests {
     fn centring_is_sent_after_moving() {
         // Order is load-bearing. The rules only centre at map time, so without a
         // follow-up centre the window keeps the position it was mapped at.
-        let commands = commands_for("dev.maxii.HyprScratch", "DP-2").unwrap();
+        let commands = commands_for("dev.Zsweezzy.HyprScratch", "DP-2").unwrap();
         assert!(commands[0].contains("window.move"));
         assert!(commands[1].contains("window.center"));
     }
@@ -242,9 +242,9 @@ mod tests {
         // is strictly better than sending something malformed.
         for (class, monitor) in [
             ("", "DP-1"),
-            ("dev.maxii.HyprScratch", ""),
-            ("dev.maxii.HyprScratch\"", "DP-1"),
-            ("dev.maxii.HyprScratch", "DP-1\" } or 1"),
+            ("dev.Zsweezzy.HyprScratch", ""),
+            ("dev.Zsweezzy.HyprScratch\"", "DP-1"),
+            ("dev.Zsweezzy.HyprScratch", "DP-1\" } or 1"),
         ] {
             assert!(
                 commands_for(class, monitor).is_none(),
@@ -265,7 +265,7 @@ mod tests {
             "DP-1'",
             "DP 1",
             "DP-1\n",
-            "dev.maxii.HyprScratch\"",
+            "dev.Zsweezzy.HyprScratch\"",
             "a.b\"c",
             "a b.c",
             "a}b",

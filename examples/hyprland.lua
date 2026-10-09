@@ -2,15 +2,15 @@
 --
 -- For a plain `.conf`, the same thing in Hyprland's own syntax:
 --
---     windowrulev2 = float, class:^(dev\.maxii\.HyprScratch)$, match:^(hypr-scratch)$
---     windowrulev2 = center, class:^(dev\.maxii\.HyprScratch)$, match:^(hypr-scratch)$
---     windowrulev2 = pin, class:^(dev\.maxii\.HyprScratch)$, match:^(hypr-scratch)$
---     windowrulev2 = border_size 0, class:^(dev\.maxii\.HyprScratch)$, match:^(hypr-scratch)$
---     windowrulev2 = no_shadow, class:^(dev\.maxii\.HyprScratch)$, match:^(hypr-scratch)$
---     windowrulev2 = no_anim, class:^(dev\.maxii\.HyprScratch)$, match:^(hypr-scratch)$
---     windowrulev2 = no_blur, class:^(dev\.maxii\.HyprScratch)$, match:^(hypr-scratch)$
---     windowrulev2 = rounding 10, class:^(dev\.maxii\.HyprScratch)$, match:^(hypr-scratch)$
---     windowrulev2 = suppress_event maximize fullscreen, class:^(dev\.maxii\.HyprScratch)$, match:^(hypr-scratch)$
+--     windowrulev2 = float, class:^(dev\.Zsweezzy\.HyprScratch)$, match:^(hypr-scratch)$
+--     windowrulev2 = center, class:^(dev\.Zsweezzy\.HyprScratch)$, match:^(hypr-scratch)$
+--     windowrulev2 = pin, class:^(dev\.Zsweezzy\.HyprScratch)$, match:^(hypr-scratch)$
+--     windowrulev2 = border_size 0, class:^(dev\.Zsweezzy\.HyprScratch)$, match:^(hypr-scratch)$
+--     windowrulev2 = no_shadow, class:^(dev\.Zsweezzy\.HyprScratch)$, match:^(hypr-scratch)$
+--     windowrulev2 = no_anim, class:^(dev\.Zsweezzy\.HyprScratch)$, match:^(hypr-scratch)$
+--     windowrulev2 = no_blur, class:^(dev\.Zsweezzy\.HyprScratch)$, match:^(hypr-scratch)$
+--     windowrulev2 = rounding 10, class:^(dev\.Zsweezzy\.HyprScratch)$, match:^(hypr-scratch)$
+--     windowrulev2 = suppress_event maximize fullscreen, class:^(dev\.Zsweezzy\.HyprScratch)$, match:^(hypr-scratch)$
 --
 --     bind = SUPER,N,exec,/home/you/.local/bin/hypr-scratch
 --     bind = ,mouse:272,exec,/home/you/.local/bin/hypr-scratch --outside-click,non_consuming
@@ -24,7 +24,7 @@
 --
 -- But `.*HyprScratch.*` is anchored at neither end, and it is the more tempting
 -- thing to write, so it is worth being precise. This repository's own test sink
--- is called `dev.maxii.HyprScratchSink` -- the notepad's class with "Sink" on the
+-- is called `dev.Zsweezzy.HyprScratchSink` -- the notepad's class with "Sink" on the
 -- end -- and an unanchored match floats, centres and pins it too. It did exactly
 -- that here: the sink came up already pinned, the suite's own `pin` toggle then
 -- unpinned it, it fell under a fullscreen browser, and every click meant for it
@@ -44,7 +44,7 @@
 
 hl.window_rule({
 	name = "hypr-scratch-overlay",
-	match = { class = [[^dev\.maxii\.HyprScratch$]] },
+	match = { class = [[^dev\.Zsweezzy\.HyprScratch$]] },
 	float = true,
 	center = true,
 	pin = true,

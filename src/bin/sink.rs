@@ -23,7 +23,7 @@ use gtk4::prelude::*;
 /// GTK 4 has no `set_wmclass` -- it went with the X11-only API -- so the class is
 /// whatever the application ID says it is. A flat `scratchsink` would not do:
 /// GApplication requires a dotted name of at least two elements.
-const SINK_CLASS: &str = "dev.maxii.HyprScratchSink";
+const SINK_CLASS: &str = "dev.Zsweezzy.HyprScratchSink";
 
 fn main() {
     let app = gtk::Application::builder()

@@ -36,7 +36,7 @@ const WINDOW_TITLE: &str = "hypr-scratch";
 /// string passed to `set_title` -- and it is what the `hypr-scratch-overlay`
 /// rule already matches, so the rule and the dispatch cannot disagree about
 /// which window is meant.
-pub const WINDOW_CLASS: &str = "dev.maxii.HyprScratch";
+pub const WINDOW_CLASS: &str = "dev.Zsweezzy.HyprScratch";
 const MAIN_MONITOR_ENV: &str = "HYPR_SCRATCH_MONITOR";
 
 /// Style provider priority, deliberately above every level GTK itself uses.
@@ -238,7 +238,7 @@ pub fn create_window(
 /// The rest of the overlay behaviour -- always on top, floating so it is never
 /// tiled, centred, and blurred -- now has to come from the
 /// `hypr-scratch-overlay` rule in `hyprland.lua`, matched on the window class.
-/// That class is the GTK application ID verbatim, `dev.maxii.HyprScratch`, and
+/// That class is the GTK application ID verbatim, `dev.Zsweezzy.HyprScratch`, and
 /// not the `hypr-scratch` the layer-surface namespace used to be. GTK4 removed
 /// the window hints that would do it from the client side (`set_keep_above`,
 /// `set_skip_taskbar_hint`, `set_skip_pager_hint` and `set_type_hint` no longer
@@ -484,7 +484,7 @@ fn install_shortcuts(ui: &Rc<ScratchUi>) {
 /// widget, `ScratchUi` keeps a handle to a destroyed window, and the next
 /// `show()` calls `present()` on it -- the notepad is bricked until the process
 /// restarts, with no error anywhere. It is reachable from outside, because the
-/// window class is documented (`dev.maxii.HyprScratch`): `hyprctl dispatch
+/// window class is documented (`dev.Zsweezzy.HyprScratch`): `hyprctl dispatch
 /// closewindow` or `killactive` aimed at it is enough.
 ///
 /// `set_deletable(false)` does not help here. It only suppresses the client-side

@@ -40,7 +40,7 @@ require_command() {
 # error -- it reports the other window's size, position and pinned state as if
 # they were the notepad's, and the run fails in a way that looks like a
 # regression in the app.
-export NOTEPAD_CLASS=dev.maxii.HyprScratch
+export NOTEPAD_CLASS=dev.Zsweezzy.HyprScratch
 
 # A window's rectangle in *physical* pixels on its own monitor: the monitor's
 # name, then x, y, width, height, ready to hand to a screenshot crop.
@@ -110,7 +110,7 @@ print(round(int(res[1]) * float(mon['scale'])))" "$1"; }
 # saying so. Two sinks make a class selector ambiguous, and an ambiguous selector
 # does not error -- the `pin` and `move` dispatches act on nothing, still report
 # ok, and every gate after that measures a desktop nobody set up.
-SINK_CLASS=dev.maxii.HyprScratchSink
+SINK_CLASS=dev.Zsweezzy.HyprScratchSink
 SINK_BIN=$HERE/../target/debug/hypr-sink
 require_sink() {
     if [ ! -x "$SINK_BIN" ]; then
@@ -185,10 +185,10 @@ def covers(rule):
     # Does this rule's class pattern actually match the notepad's class? Asking
     # the regex is the only honest test. Testing whether the class *text* merely
     # appears inside the rule looks equivalent and is not: this repository's test
-    # sink is called dev.maxii.HyprScratchSink, so its class contains the
+    # sink is called dev.Zsweezzy.HyprScratchSink, so its class contains the
     # notepad's as a substring, and a containment test reads the sink's radius as
     # the notepad's. The same reasoning rejects a rule for the sink outright,
-    # since ^(dev\.maxii\.HyprScratchSink)\$ does not match dev.maxii.HyprScratch.
+    # since ^(dev\.Zsweezzy\.HyprScratchSink)\$ does not match dev.Zsweezzy.HyprScratch.
     for pat in class_patterns(rule):
         try:
             if re.search(pat, cls):

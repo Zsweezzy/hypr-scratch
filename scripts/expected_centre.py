@@ -20,7 +20,7 @@ import subprocess
 # suite also runs a window whose class starts with this one, and a substring
 # match silently selects whichever of the two the compositor happens to list
 # first -- reporting the sink's geometry as the notepad's.
-NOTEPAD_CLASS = "dev.maxii.HyprScratch"
+NOTEPAD_CLASS = "dev.Zsweezzy.HyprScratch"
 
 
 def hyprctl(*args):

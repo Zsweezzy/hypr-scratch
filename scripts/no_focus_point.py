@@ -32,7 +32,7 @@ import time
 # suite also runs a window whose class starts with this one, and a substring
 # match silently selects whichever of the two the compositor happens to list
 # first -- reporting the sink's geometry as the notepad's.
-NOTEPAD_CLASS = "dev.maxii.HyprScratch"
+NOTEPAD_CLASS = "dev.Zsweezzy.HyprScratch"
 
 # The wallpaper is layer level 0. Anything above it is a surface that would
 # take the click instead of the desktop.

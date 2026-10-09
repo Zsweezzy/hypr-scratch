@@ -9,6 +9,9 @@
 set -euo pipefail
 
 PREFIX=${PREFIX:-$HOME/.local/bin}
+# Standard staging root, prepended to every install destination. Empty by
+# default, so a plain run is unchanged; packagers set it to stage a package.
+DESTDIR=${DESTDIR:-}
 ROOT=$(cd "$(dirname "$0")" && pwd)
 
 if ! command -v cargo >/dev/null 2>&1; then
@@ -19,17 +22,17 @@ fi
 echo "Building hypr-scratch (release)..."
 cargo build --release --manifest-path "$ROOT/Cargo.toml"
 
-install -d "$PREFIX"
-install -m 755 "$ROOT/target/release/hypr-scratch" "$PREFIX/hypr-scratch"
-echo "Installed $PREFIX/hypr-scratch"
+install -d "$DESTDIR$PREFIX"
+install -m 755 "$ROOT/target/release/hypr-scratch" "$DESTDIR$PREFIX/hypr-scratch"
+echo "Installed $DESTDIR$PREFIX/hypr-scratch"
 
 # Offer the stylesheet, but never overwrite one that is already there. The
 # built-in default is compiled in, so the notepad works without this file; it is
 # only here so there is something to edit.
 STYLE_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/hypr-scratch
 STYLE=$STYLE_DIR/style.css
-if [ -e "$STYLE" ]; then
-    echo "Left your existing $STYLE alone."
+if [ -e "$DESTDIR$STYLE" ]; then
+    echo "Left your existing $DESTDIR$STYLE alone."
 else
     # No existence test on the source, and deliberately so. `cargo build` above
     # has already run under `set -e`, and it can only succeed if
@@ -40,9 +43,9 @@ else
     # naming src/ui.rs, so the fallback was unreachable and the message described
     # a recovery that cannot happen. A branch that says something untrue is
     # worse than no branch.
-    install -d "$STYLE_DIR"
-    install -m 644 "$ROOT/data/style.css" "$STYLE"
-    echo "Wrote a starting $STYLE -- edit it to change the colours."
+    install -d "$DESTDIR$STYLE_DIR"
+    install -m 644 "$ROOT/data/style.css" "$DESTDIR$STYLE"
+    echo "Wrote a starting $DESTDIR$STYLE -- edit it to change the colours."
 fi
 
 cat <<EOF

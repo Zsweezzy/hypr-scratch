@@ -94,12 +94,12 @@ import sys
 cfg, on = sys.argv[1], sys.argv[2] == 'true'
 want = not on          # no_blur is the negation of "blur on"
 # Which rule is the notepad's. Backslashes are stripped before matching, because
-# a plain config spells the class as a regex -- `class:^(dev\.maxii\.HyprScratch)$`
+# a plain config spells the class as a regex -- `class:^(dev\.Zsweezzy\.HyprScratch)$`
 # -- and comparing that against the literal class finds nothing. The trailing
 # `(?!\\w)` is what keeps the *test sink*, whose class is the notepad's plus
 # "Sink", from being read as the notepad: a rule that turns blur off for the
 # sink says nothing about the panel being measured.
-MARKER = re.compile(r'(?<!\w)(?:dev\.maxii\.)?HyprScratch(?!\w)|hypr-scratch-overlay')
+MARKER = re.compile(r'(?<!\w)(?:dev\.Zsweezzy\.)?HyprScratch(?!\w)|hypr-scratch-overlay')
 # Both a Lua config's `hl.window_rule({...})` and a plain `windowrulev2 = ...`
 # open a rule. The Lua form spans lines, so a rule is collected by brace
 # balance rather than by line, and the marker may be on any line of it.
