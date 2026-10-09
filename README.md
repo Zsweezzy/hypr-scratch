@@ -12,9 +12,9 @@ always one keystroke away, saved as plain text. GTK 4, Rust, one binary.
 Add these binds to your Hyprland config, then reload:
 
 ```ini
-bind = SUPER,N,exec,/home/you/.local/bin/hypr-scratch
-bind = ,mouse:272,exec,/home/you/.local/bin/hypr-scratch --outside-click,non_consuming
-bind = ,mouse:273,exec,/home/you/.local/bin/hypr-scratch --outside-click,non_consuming
+bind = SUPER,N,exec,$HOME/.local/bin/hypr-scratch
+bind = ,mouse:272,exec,$HOME/.local/bin/hypr-scratch --outside-click,non_consuming
+bind = ,mouse:273,exec,$HOME/.local/bin/hypr-scratch --outside-click,non_consuming
 ```
 
 ```sh

@@ -12,9 +12,9 @@
 --     windowrulev2 = rounding 10, class:^(dev\.Zsweezzy\.HyprScratch)$, match:^(hypr-scratch)$
 --     windowrulev2 = suppress_event maximize fullscreen, class:^(dev\.Zsweezzy\.HyprScratch)$, match:^(hypr-scratch)$
 --
---     bind = SUPER,N,exec,/home/you/.local/bin/hypr-scratch
---     bind = ,mouse:272,exec,/home/you/.local/bin/hypr-scratch --outside-click,non_consuming
---     bind = ,mouse:273,exec,/home/you/.local/bin/hypr-scratch --outside-click,non_consuming
+--     bind = SUPER,N,exec,$HOME/.local/bin/hypr-scratch
+--     bind = ,mouse:272,exec,$HOME/.local/bin/hypr-scratch --outside-click,non_consuming
+--     bind = ,mouse:273,exec,$HOME/.local/bin/hypr-scratch --outside-click,non_consuming
 --
 -- The class is anchored at both ends, and that is the whole point of the line.
 --
@@ -59,7 +59,7 @@ hl.window_rule({
 -- Open it. Use an absolute path: binds run with a minimal environment, and
 -- ~/.local/bin is not always on PATH.
 bind("SUPER", "N", function()
-	hl.exec("/home/you/.local/bin/hypr-scratch")
+	hl.exec(os.getenv("HOME") .. "/.local/bin/hypr-scratch")
 end)
 
 -- Click-away dismissal, both buttons. `non_consuming` is the point of the whole
@@ -68,9 +68,9 @@ end)
 -- inside itself -- GTK 4 removed the client-side pointer grab -- so the
 -- compositor has to report the click, which is what this mode is for.
 bind("", "mouse:272", function()
-	hl.exec("/home/you/.local/bin/hypr-scratch --outside-click")
+	hl.exec(os.getenv("HOME") .. "/.local/bin/hypr-scratch --outside-click")
 end, { non_consuming = true })
 
 bind("", "mouse:273", function()
-	hl.exec("/home/you/.local/bin/hypr-scratch --outside-click")
+	hl.exec(os.getenv("HOME") .. "/.local/bin/hypr-scratch --outside-click")
 end, { non_consuming = true })
