@@ -4,7 +4,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/hypr-scratch-stress.XXXXXX")
 export WORK
 trap 'rm -rf "$WORK"' EXIT
-cd "$HERE"
+cd "$HERE" || exit
 . "$HERE/lib.sh"
 require_command SCRATCH_BIN hypr-scratch
 N=${1:-12}

@@ -4,7 +4,7 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/hypr-scratch-gates.XXXXXX")
 export WORK
-cd "$HERE"
+cd "$HERE" || exit
 FAIL=0
 . "$HERE/lib.sh"
 require_command SCRATCH_BIN hypr-scratch
@@ -528,7 +528,7 @@ if box[2] > a.width or box[3] > a.height:
     sys.exit(f'crop {box} is outside the {a.width}x{a.height} capture')
 a, b = a.crop(box), b.crop(box)
 print(sum(1 for p in ImageChops.difference(a, b).get_flattened_data() if max(p) > 12))
-" $BOX_BEFORE 2>&1)
+" $"$BOX_BEFORE" 2>&1)
     case $CHANGED in
         ''|*[!0-9]*)
             echo "  FAIL  could not diff the sink's pixels: $CHANGED"; FAIL=1 ;;
@@ -630,7 +630,7 @@ print(len([b for b in json.load(sys.stdin)
 if ! reset_notepad; then
     echo "  FAIL  the notepad would not stay open across 3 attempts"; FAIL=1
 fi
-POINT=$(PYEOF='PYEOF'; python3 -c "$(cat <<'PYEOF'
+POINT=$(python3 -c "$(cat <<'PYEOF'
 """Print `x,y` for a point where a click will not move focus, so gate 10 can tell outside-click from focus-away dismissal."""
 import json,subprocess,sys,time
 NOTEPAD_CLASS="dev.Zsweezzy.HyprScratch"

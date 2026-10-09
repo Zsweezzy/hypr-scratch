@@ -23,7 +23,7 @@ restore_config() {
     rm -rf "$WORK"
 }
 trap restore_config EXIT
-cd "$HERE"
+cd "$HERE" || exit
 
 physical_geom() { physical_geom_of "$NOTEPAD_CLASS"; }
 

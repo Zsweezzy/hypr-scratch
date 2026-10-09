@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 
 require_command() {
     local variable=$1 name=$2
@@ -16,7 +17,7 @@ require_command() {
         exit 2
     fi
     printf -v "$variable" '%s' "$resolved"
-    export "$variable"
+    export variable
 }
 
 # The notepad's window class, matched by equality; a substring match would land on the test sink.
