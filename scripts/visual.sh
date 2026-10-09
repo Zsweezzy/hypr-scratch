@@ -1,23 +1,18 @@
 #!/usr/bin/env bash
-# Visual acceptance: A/B the blur rule and check the panel corners are rounded; all coordinates read from the compositor.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
-# Artifacts go to a scratch dir, not the repo and not a fixed /tmp path.
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/hypr-scratch-visual.XXXXXX")
 export WORK
 FAIL=0
-# shellcheck source=lib.sh
 . "$HERE/lib.sh"
 require_command SCRATCH_BIN hypr-scratch
 require_hyprland_config
 
-# Every gate here shoots the screen, so refuse without grim rather than fail later with an empty capture.
 if ! command -v grim >/dev/null 2>&1; then
     echo "This is the developer visual check; it needs 'grim' on PATH." >&2
     exit 2
 fi
 
-# Restore the config on the way out: this script edits it to A/B the blur rule, so a died run must not leave `no_blur`.
 CONFIG_BACKUP=$WORK/hyprland.conf.orig
 cp "$HYPRLAND_CONFIG" "$CONFIG_BACKUP" || {
     echo "  FAIL  could not back up $HYPRLAND_CONFIG" >&2
@@ -30,7 +25,6 @@ restore_config() {
 trap restore_config EXIT
 cd "$HERE"
 
-# The notepad's rect in physical pixels plus its monitor name; read from the session, not a hardcoded table.
 physical_geom() { physical_geom_of "$NOTEPAD_CLASS"; }
 
 is_open() { hyprctl clients -j 2>/dev/null | python3 -c "
@@ -39,7 +33,6 @@ want = os.environ['NOTEPAD_CLASS']
 print('yes' if any(c['class'] == want for c in json.load(sys.stdin)) else 'no')"; }
 
 open_notepad() {
-    # Poll and retry; a fixed sleep is how a run ends up measuring a window that is not there.
     local attempt=0
     while [ "$attempt" -lt 3 ]; do
         attempt=$((attempt + 1))
@@ -59,7 +52,6 @@ open_notepad() {
 }
 
 set_blur() {  # $1 = true (blur on) | false (blur off)
-    # 2>&1 so the reason lands in $out; otherwise a failure prints an empty reason.
     local out
     out=$(python3 - "$HYPRLAND_CONFIG" "$1" 2>&1 <<'PY'
 import re
@@ -69,7 +61,6 @@ cfg, on = sys.argv[1], sys.argv[2] == 'true'
 want = not on          # no_blur is the negation of "blur on"
 # Which rule is the notepad's; backslashes stripped, and the trailing (?!\w) keeps the test sink out.
 MARKER = re.compile(r'(?<!\w)(?:dev\.Zsweezzy\.)?HyprScratch(?!\w)|hypr-scratch-overlay')
-# `windowrule(?:v2)?` as a group; written `windowrulev2?` it matched no spelling for plain configs.
 RULE = re.compile(r'windowrule(?:v2)?\s*=|window_rule\s*\(')
 NO_BLUR = re.compile(r'no_blur\s*=\s*(?:true|false)')
 PLAIN = re.compile(r'^(\s*windowrule(?:v2)?\s*=\s*)(.*?)\s*$')
@@ -99,7 +90,6 @@ def set_plain(line, allow_add):
     if want and not allow_add:
         return line
     if not want:
-        # Surgical removal, not a rebuild from split(','), which normalises spacing and grows a keyword per pass.
         out = re.sub(r'no_blur\s*,\s*', '', body, count=1)
         if out == body:
             out = re.sub(r'\s*,\s*no_blur\s*$', '', body, count=1)
@@ -142,23 +132,19 @@ while i < len(lines):
             lines[j] = new
             hits += 1
 
-# Count `found`, not `hits`: the first call legitimately changes nothing.
 if found == 0:
     sys.exit(f'no hypr-scratch window rule in {cfg}, so there is nothing to toggle')
-# A spread-out plain config does not come back byte-identical; reported rather than hidden.
 open(cfg, 'w').write('\n'.join(lines))
 print(f'{found} rule(s), {hits} line(s) changed')
 PY
     ) || { echo "  FAIL  could not set the blur rule: $out"; exit 1; }
     echo "         blur $([ "$1" = true ] && echo on || echo off): $out"
-    # luac is a nicety: `command -v luac && ... || fail` would fall into the fail branch without it.
     if command -v luac >/dev/null; then
         luac -p "$HYPRLAND_CONFIG" || {
             echo "  FAIL  the edit left a Lua syntax error in $HYPRLAND_CONFIG"
             exit 1
         }
     fi
-    # The authoritative check: if the compositor still loads the config, the edit was survivable.
     if ! hyprctl reload >/dev/null 2>&1; then
         echo "  FAIL  $HYPRLAND_CONFIG does not load; the edit broke it"
         exit 1
@@ -168,7 +154,6 @@ PY
 
 shoot() {  # $1 = output name
     local geom; geom=$(physical_geom)
-    # Without this, empty fields yield a degenerate box and a confidently-zero diff.
     if [ -z "$geom" ]; then
         echo "  FAIL  no geometry for the notepad; is it open?"
         exit 1
@@ -195,7 +180,6 @@ PY
 }
 
 echo "GATE 8  the panel is translucent enough for the compositor to frost it"
-# A/B with a null control: two shots in the same state give the noise floor to compare against.
 panel_diff() { python3 -c "
 import os, sys
 from PIL import Image, ImageChops
@@ -224,7 +208,6 @@ echo "  interior mean/stddev, blur off: $(stats "$WORK"/blur_off.png 2>&1)"
 echo "  noise floor, blur on  vs on  : $NULL"
 echo "  noise floor, blur off vs off : $OFFNULL"
 echo "  blur on vs off (the effect)   : $EFFECT"
-# An empty result means the measurement failed, not that blur is broken; say so rather than reporting zero.
 if [ -z "$NULL" ] || ! printf '%s' "$NULL" | grep -qE '^[0-9]+ '; then
     echo "  FAIL  could not measure the panel: $NULL"
     FAIL=1
@@ -248,12 +231,10 @@ from PIL import Image
 WORK = os.environ['WORK']
 px, py, pw, ph = (int(v) for v in open(os.path.join(WORK, '.geom')).read().split()[-4:])
 im = Image.open(os.path.join(WORK, "final.png")).convert('RGB')
-# Sample a short way along each edge; a rounded corner shows backdrop, a square one shows panel fill.
 interior = im.getpixel((px + pw // 2, py + ph // 2))
 def spread(points):
     vals = [im.getpixel((px + dx, py + dy)) for dx, dy in points]
     return max(sum(abs(a - b) for a, b in zip(v, interior)) for v in vals)
-# 6px in from each corner: inside the arc, still on the border's curve.
 near = 6
 corners = {
     'top-left':     [(near, near), (near + 4, near), (near, near + 4)],

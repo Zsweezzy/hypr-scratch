@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Build and install hypr-scratch; for building once and leaving the Rust toolchain behind.
 set -euo pipefail
 
 PREFIX=${PREFIX:-$HOME/.local/bin}
-# Standard staging root, prepended to every install destination; empty by default.
 DESTDIR=${DESTDIR:-}
 ROOT=$(cd "$(dirname "$0")" && pwd)
 
@@ -19,13 +17,11 @@ install -d "$DESTDIR$PREFIX"
 install -m 755 "$ROOT/target/release/hypr-scratch" "$DESTDIR$PREFIX/hypr-scratch"
 echo "Installed $DESTDIR$PREFIX/hypr-scratch"
 
-# Offer the stylesheet but never overwrite one that exists; the built-in default is compiled in anyway.
 STYLE_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/hypr-scratch
 STYLE=$STYLE_DIR/style.css
 if [ -e "$DESTDIR$STYLE" ]; then
     echo "Left your existing $DESTDIR$STYLE alone."
 else
-    # No existence test on the source: the build above already resolved it under `set -e`.
     install -d "$DESTDIR$STYLE_DIR"
     install -m 644 "$ROOT/data/style.css" "$DESTDIR$STYLE"
     echo "Wrote a starting $DESTDIR$STYLE -- edit it to change the colours."

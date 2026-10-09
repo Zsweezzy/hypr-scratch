@@ -1,6 +1,4 @@
-# Shared setup for the test scripts; kept in one file so the three scripts cannot disagree about which binary they test.
 
-# Resolves a command to a full path; an explicit override wins, then PATH, then ~/.local/bin.
 require_command() {
     local variable=$1 name=$2
     local resolved=${!variable:-}
@@ -24,7 +22,6 @@ require_command() {
 # The notepad's window class, matched by equality; a substring match would land on the test sink.
 export NOTEPAD_CLASS=dev.Zsweezzy.HyprScratch
 
-# A window's rectangle in physical pixels; hyprctl reports logical and grim crops physical, so a naive crop lands wrong.
 physical_geom_of() {  # $1 = window class -> "name px py pw ph", or exits
     python3 -c "
 import json, os, subprocess, sys
@@ -45,7 +42,6 @@ w, h = win['size']
 px, py = round((x - mon['x']) * sc), round((y - mon['y']) * sc)
 print(mon['name'], px, py, round(w * sc), round(h * sc))" "$1"; }
 
-# A monitor's top reserved height in physical pixels; read from the compositor because the status bar repaints.
 reserved_top_px() {  # $1 = monitor name
     python3 -c "
 import json, subprocess, sys
@@ -55,7 +51,6 @@ mon = next((m for m in json.loads(subprocess.run(
     if m['name'] == name), None)
 if mon is None:
     sys.exit(f'no monitor named {name}')
-# reserved is [left, top, right, bottom]; index 0 is left, so reading the wrong slot silently returns 0.
 res = mon.get('reserved') or []
 if len(res) != 4:
     sys.exit(f'monitor {name} has a {len(res)}-entry reserved field, expected 4')
@@ -114,7 +109,6 @@ def covers(rule):
             if re.search(pat, cls):
                 return True
         except re.error:
-            # Not a regex Python can read; fall back to a literal test that errs towards refusing.
             if cls in pat.replace(chr(92), ''):
                 return True
     return False

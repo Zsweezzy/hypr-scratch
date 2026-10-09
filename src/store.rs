@@ -3,13 +3,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Overrides the note location; without it the note lives at `~/Documents/scratchpad.md`.
 pub const NOTE_PATH_ENV: &str = "HYPR_SCRATCH_FILE";
 
 const DEFAULT_FILE_NAME: &str = "scratchpad.md";
 const STARTER_CONTENTS: &str = "# Scratchpad\n";
 
-/// Saves are atomic: write a `.tmp` sibling, then rename over the note.
 pub struct NoteStore {
     path: PathBuf,
 }
@@ -30,7 +28,6 @@ impl NoteStore {
         &self.path
     }
 
-    /// Reads the note, seeding it with starter contents on first run.
     pub fn load(&self) -> io::Result<String> {
         match fs::read_to_string(&self.path) {
             Ok(contents) => Ok(contents),
@@ -53,7 +50,6 @@ impl NoteStore {
     }
 }
 
-/// Public so `--print-config` reports the path this build actually uses.
 pub fn default_path() -> PathBuf {
     if let Some(raw) = non_empty_env(NOTE_PATH_ENV) {
         return expand_home(raw);
@@ -78,7 +74,6 @@ fn non_empty_env(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// Expands a leading `~/`, since that is what people write in a path setting.
 pub(crate) fn expand_home(raw: String) -> PathBuf {
     if let Some(rest) = raw.strip_prefix("~/")
         && let Some(home) = non_empty_env("HOME")

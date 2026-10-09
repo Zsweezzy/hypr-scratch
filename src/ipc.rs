@@ -23,7 +23,6 @@ const DISMISS_MESSAGE: &[u8] = b"dismiss\n";
 
 const MAX_COMMAND_LEN: usize = 64;
 
-/// Distinct commands: a click inside and a hotkey press look identical to the compositor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     Toggle,
@@ -39,9 +38,7 @@ impl Command {
     }
 }
 
-/// Quiet on failure: this runs on every click, and a notepad that is not running is the common case.
 pub fn send(command: Command) -> bool {
-    // Checked before connecting, so the common case costs one `stat`.
     if !is_running() {
         return false;
     }
@@ -52,14 +49,12 @@ pub fn send(command: Command) -> bool {
     stream.write_all(command.message()).is_ok()
 }
 
-/// Just a `stat`, no connection: this is on the hot path of every click.
 pub fn is_running() -> bool {
     socket_path().is_ok_and(|path| path.exists())
 }
 
 const SEND_TIMEOUT: Duration = Duration::from_millis(200);
 
-/// Two atomics, not a channel: the GTK side has to poll either way.
 #[derive(Default)]
 pub struct PendingCommands {
     toggle: AtomicBool,
@@ -117,7 +112,6 @@ impl PrimaryInstance {
     }
 }
 
-/// Line-oriented, so a longer command is not truncated to a fixed length.
 fn read_command(reader: &mut impl Read) -> io::Result<Option<Command>> {
     let mut line = Vec::new();
     let mut byte = [0_u8; 1];
@@ -127,7 +121,6 @@ fn read_command(reader: &mut impl Read) -> io::Result<Option<Command>> {
             Ok(_) if byte[0] == b'\n' => break,
             Ok(_) => {
                 if line.len() == MAX_COMMAND_LEN {
-                    // Never a real command; stop rather than buffer a peer with no newline.
                     return Ok(None);
                 }
                 line.push(byte[0]);
@@ -155,7 +148,6 @@ fn acquire_instance_at(path: &Path) -> io::Result<AcquiredInstance> {
     for _ in 0..100 {
         match try_lock(&lock) {
             Ok(()) => {
-                // A legacy primary may predate the lock file; offer it the toggle first.
                 if try_toggle_existing(path)? {
                     return Ok(AcquiredInstance::Secondary);
                 }
@@ -172,7 +164,6 @@ fn acquire_instance_at(path: &Path) -> io::Result<AcquiredInstance> {
                 if try_toggle_existing(path)? {
                     return Ok(AcquiredInstance::Secondary);
                 }
-                // The lock owner may not have bound its socket yet; retry instead of stealing it.
                 thread::sleep(Duration::from_millis(10));
             }
             Err(error) => return Err(error),
@@ -257,7 +248,6 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::thread;
 
-    /// Each command must raise its own flag and no other; a mix-up is silent.
     #[test]
     fn each_command_raises_only_its_own_flag() {
         for (command, toggle, dismiss) in [
@@ -273,13 +263,11 @@ mod tests {
                 dismiss,
                 "{command:?} raised dismiss"
             );
-            // Taking must consume, or a flag would re-fire on every poll.
             assert!(!pending.take_toggle(), "{command:?} was consumed");
             assert!(!pending.take_dismiss(), "{command:?} was consumed");
         }
     }
 
-    /// The whole `dismiss` path over a real socket, which may split the line.
     #[test]
     fn a_dismiss_written_to_a_socket_ends_up_as_a_pending_command() {
         let pending = PendingCommands::default();
@@ -304,7 +292,6 @@ mod tests {
         assert!(!pending.take_toggle());
     }
 
-    /// Feeds a message one byte per read, as a socket is free to do.
     struct Fragmented<'a> {
         bytes: &'a [u8],
         position: usize,
@@ -333,7 +320,6 @@ mod tests {
         );
     }
 
-    /// `dismiss` is a byte longer than `toggle`, so a fixed-length reader would drop it silently.
     #[test]
     fn every_message_a_sender_writes_parses_to_its_own_command() {
         for (message, want) in [
@@ -354,9 +340,7 @@ mod tests {
     fn unknown_and_unterminated_lines_are_ignored_rather_than_guessed_at() {
         for message in [
             &b"nonsense\n"[..],
-            // A peer that connects and says nothing must not be read as a command.
             b"",
-            // Long enough to set the cap off, with no terminator anywhere.
             &[b'x'; MAX_COMMAND_LEN + 1],
         ] {
             let mut reader = Cursor::new(message);

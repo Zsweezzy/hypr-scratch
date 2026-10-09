@@ -30,16 +30,13 @@ const WINDOW_TITLE: &str = "hypr-scratch";
 pub const WINDOW_CLASS: &str = "dev.Zsweezzy.HyprScratch";
 const MAIN_MONITOR_ENV: &str = "HYPR_SCRATCH_MONITOR";
 
-/// Above the user stylesheet (800): at 600 the theme's `textview` rules won.
 const CSS_PRIORITY: u32 = 1000;
 const AUTOSAVE_DEBOUNCE: Duration = Duration::from_millis(500);
-/// Long enough for the window rules to have been applied.
 const PLACEMENT_DELAY: Duration = Duration::from_millis(80);
 
 /// Deliberately longer than `PLACEMENT_DELAY`: the warp reads the placed rectangle back.
 const CURSOR_WARP_DELAY: Duration = Duration::from_millis(160);
 
-/// Short enough that a click feels responsive, long enough not to busy-loop.
 const POLL_INTERVAL: Duration = Duration::from_millis(8);
 
 pub struct UiHandle(Rc<ScratchUi>);
@@ -60,9 +57,7 @@ struct ScratchUi {
     save_timer: RefCell<Option<glib::SourceId>>,
     dirty: Cell<bool>,
     pending: Arc<PendingCommands>,
-    /// Connector the notepad should open on, if one could be chosen.
     target_monitor: Option<String>,
-    /// Set once the window is active; activation only matters after that.
     armed_for_focus_loss: Cell<bool>,
 }
 
@@ -71,7 +66,6 @@ pub fn create_window(
     pending: Arc<PendingCommands>,
     start_visible: bool,
 ) -> UiHandle {
-    // Pin the theme: the portal's `gtk-theme` overrides GTK_THEME and breaks the frosting.
     if let Some(settings) = gtk::Settings::default() {
         settings.set_gtk_theme_name(Some("Adwaita-dark"));
     }
@@ -82,14 +76,12 @@ pub fn create_window(
         .default_width(PANEL_WIDTH)
         .default_height(PANEL_HEIGHT)
         .build();
-    // Set before anything can map the window, or it flashes a titlebar.
     window.set_decorated(false);
     window.set_resizable(true);
     window.add_css_class("scratch-window");
     configure_overlay_window(&window);
     install_css();
 
-    // Window rules centre on the monitor it opens on, so the main display is asked at runtime.
     let target_monitor =
         select_main_monitor().and_then(|monitor| monitor.connector().map(String::from));
 
@@ -143,7 +135,6 @@ pub fn create_window(
         });
     }
 
-    // Cursor moves change no text, so this only moves the position readout.
     {
         let signal_ui = ui.clone();
         ui.buffer
@@ -156,15 +147,12 @@ pub fn create_window(
     install_placement(&ui);
     install_cursor_warp(&ui);
 
-    // The socket thread only sets flags; the GTK main loop applies them.
     {
         let ui = ui.clone();
         glib::timeout_add_local(POLL_INTERVAL, move || {
-            // Both flags are taken every pass; a stranded `dismiss` would close the window `toggle` just opened.
             let toggle = ui.pending.take_toggle();
             let dismiss = ui.pending.take_dismiss();
             if toggle {
-                // An explicit request outranks an incidental click in the same milliseconds.
                 ui.toggle();
             } else if dismiss && on_outside_click(ui.window.is_visible()) {
                 ui.hide();
@@ -185,18 +173,14 @@ pub fn create_window(
     UiHandle(ui)
 }
 
-/// Only suppresses the client-side destroy affordance; `install_close_flush` handles the real close route.
 fn configure_overlay_window(window: &gtk::ApplicationWindow) {
     window.set_deletable(false);
 }
 
-/// The dismissal decision as a pure function; the non-dismiss cases cannot be provoked through a compositor.
 fn on_focus_change(armed: bool, is_active: bool, is_visible: bool) -> (bool, bool) {
     if is_active {
-        // The compositor has given us the keyboard; from here on, losing it means the user moved on.
         (true, false)
     } else {
-        // Disarm whether or not we act, so a hidden window cannot dismiss twice.
         (false, armed && is_visible)
     }
 }
@@ -217,7 +201,6 @@ fn install_focus_dismissal(ui: &Rc<ScratchUi>) {
     });
 }
 
-/// GTK4 removed the pointer grab, so the compositor reports clicks; the check guards a `--background` window.
 fn on_outside_click(is_visible: bool) -> bool {
     is_visible
 }
@@ -227,7 +210,6 @@ fn install_placement(ui: &Rc<ScratchUi>) {
     let signal_ui = ui.clone();
     ui.window.connect_map(move |_| {
         let target = signal_ui.target_monitor.clone();
-        // Cloned rather than reached back through `signal_ui`, which the outer closure owns.
         let window = signal_ui.window.clone();
         glib::timeout_add_local(PLACEMENT_DELAY, move || {
             if window.is_visible()
@@ -244,7 +226,6 @@ fn install_placement(ui: &Rc<ScratchUi>) {
 fn install_cursor_warp(ui: &Rc<ScratchUi>) {
     let signal_ui = ui.clone();
     ui.window.connect_map(move |_| {
-        // Cloned for the same reason as `install_placement`.
         let window = signal_ui.window.clone();
         glib::timeout_add_local(CURSOR_WARP_DELAY, move || {
             if window.is_visible() {
@@ -255,7 +236,6 @@ fn install_cursor_warp(ui: &Rc<ScratchUi>) {
     });
 }
 
-/// An explicit `HYPR_SCRATCH_MONITOR` connector if set, else the largest physical display.
 fn select_main_monitor() -> Option<gdk::Monitor> {
     let display = gdk::Display::default()?;
     let model = display.monitors();
@@ -339,7 +319,6 @@ fn install_shortcuts(ui: &Rc<ScratchUi>) {
                 owner.flush();
                 Propagation::Stop
             }
-            // Insert a tab only when nothing is selected; replacing a selection is far more destructive.
             gdk::Key::Tab if !primary && !owner.buffer.has_selection() => {
                 let buffer = &owner.buffer;
                 let mark = buffer.get_insert();
@@ -374,7 +353,6 @@ impl ScratchUi {
     }
 
     fn show(&self) {
-        // Disarm before presenting so focusing it is not read as moving on; re-arm if already active, as no transition fires then.
         self.armed_for_focus_loss.set(false);
         self.window.present();
         self.editor.grab_focus();
@@ -384,14 +362,11 @@ impl ScratchUi {
     }
 
     fn hide(&self) {
-        // Flush before unmapping: the opening hotkey can re-dismiss well inside the debounce window.
         self.flush();
-        // Disarm before hiding, because unmapping takes the focus away.
         self.armed_for_focus_loss.set(false);
         self.window.hide();
     }
 
-    /// Restarts the debounce timer; takes `&Rc<Self>` because the callback needs a strong reference.
     fn schedule_save(self: &Rc<Self>) {
         if let Some(id) = self.save_timer.borrow_mut().take() {
             id.remove();
@@ -454,13 +429,10 @@ fn plural<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
     if count == 1 { singular } else { plural }
 }
 
-/// Overrides the compiled-in stylesheet.
 const STYLE_ENV: &str = "HYPR_SCRATCH_STYLE";
 
-/// The built-in stylesheet, also shipped as `data/style.css` so the two cannot drift.
 const DEFAULT_CSS: &str = include_str!("../data/style.css");
 
-/// Where a user stylesheet lives: `$XDG_CONFIG_HOME/hypr-scratch/style.css` (or `$HOME/.config`), overridden by `HYPR_SCRATCH_STYLE`.
 pub fn style_path() -> PathBuf {
     if let Some(raw) = env::var_os(STYLE_ENV).filter(|value| !value.is_empty()) {
         return expand_home(raw.to_string_lossy().into_owned());
@@ -476,7 +448,6 @@ pub fn style_path() -> PathBuf {
 }
 
 fn install_css() {
-    // Default first, user's second, same priority, so unmentioned rules survive; the user file alone leaves an unstyled box.
     let mut providers = vec![provider_for(DEFAULT_CSS, "the built-in stylesheet")];
 
     match user_css() {
@@ -495,9 +466,7 @@ fn install_css() {
     }
 }
 
-/// The user's stylesheet and its source, or `Ok(None)`; `Err` carries the path, since "could not read your config" alone is useless.
 fn user_css() -> Result<Option<(String, String)>, (PathBuf, std::io::Error)> {
-    // An explicit path is a request, so report problems with it; a missing default is merely unconfigured.
     if let Some(raw) = env::var_os(STYLE_ENV).filter(|value| !value.is_empty()) {
         let path = expand_home(raw.to_string_lossy().into_owned());
         let css = std::fs::read_to_string(&path).map_err(|error| (path.clone(), error))?;
@@ -508,7 +477,6 @@ fn user_css() -> Result<Option<(String, String)>, (PathBuf, std::io::Error)> {
     }
 
     let path = style_path();
-    // A missing file is the normal case, not a problem to report.
     match std::fs::read_to_string(&path) {
         Ok(css) if css.trim().is_empty() => Err((path, std::io::Error::other("the file is empty"))),
         Ok(css) => Ok(Some((css, path.display().to_string()))),
@@ -517,12 +485,10 @@ fn user_css() -> Result<Option<(String, String)>, (PathBuf, std::io::Error)> {
     }
 }
 
-/// Builds a provider that complains on stderr if the CSS does not parse, which GTK otherwise ignores.
 fn provider_for(css: &str, source: &str) -> gtk::CssProvider {
     let provider = gtk::CssProvider::new();
     let (text, source) = (css.to_owned(), source.to_owned());
     provider.connect_parsing_error(move |_, section, error| {
-        // `CssLocation` gives only a char offset, so count the line from the source in chars, not bytes.
         let offset = section.start_location().chars();
         let line = text.chars().take(offset).filter(|c| *c == '\n').count() + 1;
         eprintln!("hypr-scratch: {source} line {line}: {error}");
@@ -535,7 +501,6 @@ fn provider_for(css: &str, source: &str) -> gtk::CssProvider {
 mod tests {
     use super::{on_focus_change, on_outside_click};
 
-    /// A reported outside click dismisses an open notepad and nothing else; the hidden-window case cannot be provoked through a compositor.
     #[test]
     fn an_outside_click_dismisses_only_a_window_that_is_up() {
         assert!(
@@ -548,23 +513,16 @@ mod tests {
         );
     }
 
-    /// Every combination, because the cases that must *not* dismiss cannot be provoked through a compositor.
     #[test]
     fn the_dismissal_decision_over_every_combination() {
-        // (armed, is_active, is_visible) -> (armed_after, dismiss)
         let cases = [
-            // Not yet activated and not visible: the state on the way up; must not dismiss.
             ((false, false, false), (false, false)),
-            // Armed, inactive, already hidden: a hide() that raced the notification; must not dismiss again.
             ((true, false, false), (false, false)),
-            // The one case that dismisses: the user moved on.
             ((true, false, true), (false, true)),
-            // Gained activation. Arms, never dismisses.
             ((false, true, true), (true, false)),
             ((true, true, true), (true, false)),
             ((false, true, false), (true, false)),
             ((true, true, false), (true, false)),
-            // Never armed, and never active: nothing to dismiss.
             ((false, false, true), (false, false)),
         ];
         for (input, want) in cases {
@@ -578,7 +536,6 @@ mod tests {
 
     #[test]
     fn arming_is_cleared_by_losing_it_and_set_by_gaining_it() {
-        // The hide/show cycle: arm on activation, disarm on the dismissing loss; a second loss while hidden is a no-op.
         let (armed, dismiss) = on_focus_change(false, true, true);
         assert!(armed && !dismiss, "gaining activation arms");
 

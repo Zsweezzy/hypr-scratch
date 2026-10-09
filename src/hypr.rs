@@ -1,4 +1,3 @@
-//! Minimal client for Hyprland's command socket.
 
 use std::{
     env,
@@ -21,7 +20,6 @@ fn commands_for(class: &str, monitor: &str) -> Option<[String; 2]> {
     ])
 }
 
-/// Centring is sent after the move: the window rule only centres at map time.
 pub fn move_and_center(class: &str, monitor: &str) {
     let Some(commands) = commands_for(class, monitor) else {
         return;
@@ -31,22 +29,18 @@ pub fn move_and_center(class: &str, monitor: &str) {
     }
 }
 
-/// `hl.dsp.cursor.move` is the spelling proven in `scripts/gates.sh`.
 fn cursor_command(x: i32, y: i32) -> String {
     format!("hl.dsp.cursor.move({{ x = {x}, y = {y} }})")
 }
 
-/// Warps the pointer into the notepad so a stray click does not dismiss it.
 pub fn move_cursor(x: i32, y: i32) {
     dispatch(&cursor_command(x, y));
 }
 
-/// Fire-and-forget; failures are ignored.
 fn dispatch(command: &str) {
     let Ok(mut stream) = connect() else {
         return;
     };
-    // Terminated with a newline, then closed by dropping the stream.
     if stream.write_all(command.as_bytes()).is_err() {
         return;
     }
@@ -64,7 +58,6 @@ fn is_plain(value: &str) -> bool {
 
 pub const QUERY_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Drains stdout on its own thread and bounds the wait: a full pipe would deadlock `hyprctl clients -j`.
 pub fn query(arguments: &[&str]) -> Option<String> {
     use std::io::Read;
 
@@ -96,7 +89,6 @@ pub fn query(arguments: &[&str]) -> Option<String> {
     if finished.is_none() {
         let _ = child.kill();
     }
-    // Reap it either way, so a killed child does not become a zombie.
     let _ = child.wait();
 
     if !finished?.success() {
@@ -158,7 +150,6 @@ mod tests {
 
     #[test]
     fn centring_is_sent_after_moving() {
-        // Order is load-bearing: the rules only centre at map time.
         let commands = commands_for("dev.Zsweezzy.HyprScratch", "DP-2").unwrap();
         assert!(commands[0].contains("window.move"));
         assert!(commands[1].contains("window.center"));
@@ -166,7 +157,6 @@ mod tests {
 
     #[test]
     fn the_cursor_command_targets_the_notepad_centre() {
-        // The exact spacing is part of the contract with Hyprland's Lua.
         assert_eq!(
             cursor_command(419, 439),
             r#"hl.dsp.cursor.move({ x = 419, y = 439 })"#
@@ -175,7 +165,6 @@ mod tests {
 
     #[test]
     fn an_unusable_value_produces_no_command_at_all() {
-        // Sending nothing beats a malformed command: a nameless dispatch acts on the focused window.
         for (class, monitor) in [
             ("", "DP-1"),
             ("dev.Zsweezzy.HyprScratch", ""),
@@ -191,7 +180,6 @@ mod tests {
 
     #[test]
     fn rejects_anything_that_could_escape_the_lua_string() {
-        // These reach a Lua interpreter inside the compositor: nothing that can break out of the string may pass.
         for hostile in [
             "",
             "DP-1\"",

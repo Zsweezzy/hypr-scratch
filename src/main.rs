@@ -49,7 +49,6 @@ fn main() {
         return;
     }
 
-    // Runs on every click: must not open a display connection or touch the instance socket.
     if arguments
         .iter()
         .any(|argument| argument == "--outside-click")
@@ -81,7 +80,6 @@ fn main() {
         Ok(ipc::AcquiredInstance::Primary(instance)) => {
             Some(instance.spawn_listener(pending.clone()))
         }
-        // Another instance owns the socket and received our toggle; nothing left to do.
         Ok(ipc::AcquiredInstance::Secondary) => return,
         Err(error) => {
             eprintln!("could not start scratchpad instance: {error}");
@@ -122,7 +120,6 @@ fn main() {
         }
     });
 
-    // Keep the process alive when hidden; the socket forwards later invocations here.
     let _hold = app.hold();
     app.run();
 }

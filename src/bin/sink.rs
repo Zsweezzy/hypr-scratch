@@ -1,4 +1,3 @@
-//! A throwaway window for the acceptance suite, so it needs no terminal emulator on `PATH`.
 
 use gtk4 as gtk;
 use gtk4::prelude::*;
@@ -12,7 +11,6 @@ fn main() {
         .build();
 
     app.connect_activate(|app| {
-        // Opaque on purpose: gate 5 counts changed pixels, and a translucent window would report the desktop.
         let view = gtk::TextView::new();
         view.set_monospace(true);
         view.set_cursor_visible(true);

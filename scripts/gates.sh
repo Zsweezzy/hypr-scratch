@@ -1,18 +1,14 @@
 #!/usr/bin/env bash
-# Acceptance suite for hypr-scratch: every gate is checked against the running compositor, resolving rather than assuming.
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-# Artifacts go to a scratch dir rather than a fixed /tmp path or the source tree.
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/hypr-scratch-gates.XXXXXX")
 export WORK
 cd "$HERE"
 FAIL=0
-# shellcheck source=lib.sh
 . "$HERE/lib.sh"
 require_command SCRATCH_BIN hypr-scratch
 require_sink
-# grim is developer-only; the suite uses it just for GATE 5's pixel diff, which is skipped without it.
 HAVE_GRIM=0
 command -v grim >/dev/null 2>&1 && HAVE_GRIM=1
 SINK_X=1980
@@ -34,7 +30,6 @@ try:
     d = json.load(sys.stdin)
 except ValueError:
     print('(unreadable)'); raise SystemExit(0)
-# An empty object means nothing holds the focus, a real state of this desktop, not a stolen window.
 print(d.get('class') or '(none)')"; }
 field() { hyprctl clients -j 2>/dev/null | python3 -c "
 import json, os, sys
@@ -43,7 +38,6 @@ for c in json.load(sys.stdin):
     if c['class'] == want:
         print(c.get('$1')); break"; }
 check() {
-    # An empty value never satisfies a non-empty expectation, or "both empty" reports PASS.
     if [ -z "$3" ]; then
         echo "  FAIL  $1 (no expectation; the check itself is broken)"
         FAIL=1
@@ -58,13 +52,11 @@ check() {
     fi
 }
 
-## Reading the note
 note() { cat "$WORK"/v.md 2>/dev/null; }
 note_says() {  # $1 = the marker to look for
     case $(note) in *"$1"*) return 0 ;; *) return 1 ;; esac
 }
 
-# Containment, not equality: a person typing at the note mid-run must not fail a gate the app did not fail.
 check_note() {  # $1 = label, $2 = marker
     local got
     got=$(note)
@@ -99,7 +91,6 @@ wait_state() {  # $1 = want, $2 = timeout in tenths of a second
     done
     return 1
 }
-# wtype has no target: the destination is checked at the keystroke, and a mismatch is fatal.
 type_into() {  # $1 = the class that must have the focus, $2.. = wtype arguments
     local want=$1 have
     shift
@@ -130,7 +121,6 @@ stable_focus() {  # $1 = timeout in tenths of a second
     done
     printf '%s' "$cur"
 }
-# Never invoke bare: with no instance it becomes primary and blocks in the GTK loop, so detach and poll.
 toggle() { [ "$(open)" = "$1" ] && return 0
            setsid env HYPR_SCRATCH_FILE="$WORK"/v.md "$SCRATCH_BIN" >/dev/null 2>&1 </dev/null &
            wait_state "$1" 40; }
@@ -139,7 +129,6 @@ toggle_close() { toggle closed; }
 alive() { pgrep -c -x hypr-scratch 2>/dev/null || true; }
 
 reset_notepad() {
-    # Retry and poll rather than sleep: re-open when a third party grabbed focus, bounded at three attempts.
     : > "$WORK"/v.md
     local attempt=0
     while [ "$attempt" -lt 3 ]; do
@@ -148,7 +137,6 @@ reset_notepad() {
         sleep 1.2
         setsid env HYPR_SCRATCH_FILE="$WORK"/v.md "$SCRATCH_BIN" >/dev/null 2>&1 </dev/null &
         wait_state OPEN 50 || true
-        # Poll once more: a third party grabbing focus a moment later dismisses it correctly.
         sleep 0.8
         [ "$(open)" = OPEN ] && return 0
         echo "         (attempt $attempt: something took focus; retrying)"
@@ -159,13 +147,11 @@ reset_notepad() {
 
 ## The sink window: a floated, pinned target the suite owns and places, built from src/bin/sink.rs.
 SINK_PID=""
-# Counted, not tested for presence: "is there one" cannot tell the case that matters.
 sink_windows() {
     hyprctl clients -j 2>/dev/null | python3 -c "
 import json, sys
 print(sum(1 for c in json.load(sys.stdin) if c['class'] == '$SINK_CLASS'))" 2>/dev/null
 }
-# Sink rect and centre in logical coords; six fields, because read's last var swallows the remainder.
 sink_geom() {
     hyprctl clients -j 2>/dev/null | python3 -c "
 import json, sys
@@ -181,9 +167,7 @@ for c in json.load(sys.stdin):
 sink_crop_box() {
     local geom mon px py pw ph res v
     geom=$(physical_geom_of "$SINK_CLASS") || return 1
-    # Exactly five fields, read by name: a missing one would be swallowed by the last variable.
     read -r mon px py pw ph <<<"$geom" || return 1
-    # Validate each field alone; joining them with a colon also matches the separator.
     for v in "$px" "$py" "$pw" "$ph"; do
         case ${v:-} in ''|*[!0-9]*) return 1 ;; esac
     done
@@ -256,7 +240,6 @@ sink_set_state() {  # $1 = want float, $2 = want pin
     sink_state
 }
 
-# A position inside the monitor's usable area; the Python below lives in a double-quoted string, so a double quote in it ends the string early.
 sink_fit() {
     python3 -c "
 import json, subprocess, sys
@@ -271,7 +254,6 @@ mon = next((m for m in hypr('monitors') if m['id'] == win['monitor']), None)
 if mon is None:
     sys.exit('no monitor with id ' + str(win['monitor']))
 sc = float(mon['scale'])
-# size is physical, x/y logical: divide the size, not the origin; integer division on purpose.
 mw, mh = int(mon['width'] / sc), int(mon['height'] / sc)
 left, top, right, bottom = (int(v) for v in (mon.get('reserved') or [0, 0, 0, 0]))
 ux0, uy0 = mon['x'] + left, mon['y'] + top
@@ -286,7 +268,6 @@ sink_up() {
     sink_down
     setsid "$SINK_BIN" >/dev/null 2>&1 </dev/null &
     SINK_PID=$!
-    # Disown so the EXIT trap's kill does not make bash print "Killed" on stderr.
     disown 2>/dev/null || true
     local i=0
     while [ "$i" -lt 40 ]; do
@@ -318,7 +299,6 @@ sink_up() {
     fi
     hyprctl dispatch "hl.dsp.window.move({ $sel, x = $SINK_X, y = $SINK_Y })" >/dev/null 2>&1
     sleep 0.6
-    # The move is only a preference: clamp into the usable area so it cannot hang off-screen.
     local fit
     if ! fit=$(sink_fit); then
         echo "  FAIL  $fit"
@@ -333,7 +313,6 @@ sink_up() {
         hyprctl dispatch "hl.dsp.window.move({ $sel, x = $fx, y = $fy })" >/dev/null 2>&1
         sleep 0.6
     fi
-    # Read the point back from the compositor after placing: the move is a request the compositor may decline.
     SINK_GEOM=$(sink_geom)
     if [ -z "$SINK_GEOM" ]; then
         echo "  FAIL  the sink has no readable geometry, so no click can be placed"
@@ -356,7 +335,6 @@ sink_up() {
         return 1
     fi
     echo "         sink is $SINK_W x $SINK_H at ($SINK_AT_X,$SINK_AT_Y);"
-    # The middle is under the pinned notepad: click the exposed part, from live geometry.
     local point
     if ! point=$(sink_exposed_point); then
         echo "  FAIL  the sink is entirely covered by the notepad, so there is no"
@@ -378,7 +356,6 @@ sink_down() {
         kill -9 "$SINK_PID" 2>/dev/null
     fi
     SINK_PID=""
-    # Match by exact name (-x): -f would also match this script's own python3 -c args.
     pkill -9 -x hypr-sink 2>/dev/null
     sleep 0.4
     # Wait for the window, not just the process: one on its way out still matches the class.
@@ -406,7 +383,6 @@ for m in json.load(sys.stdin):
         print(m['name']); break" "$1"
 }
 click_at() {  # $1 = logical x, $2 = logical y
-    # ydotool's absolute mode is broken here: position via the compositor, press separately.
     hyprctl dispatch "hl.dsp.cursor.move({ x = $1, y = $2 })" >/dev/null 2>&1
     sleep 0.3
     ydotool click 0xC0 >/dev/null 2>&1
@@ -420,7 +396,6 @@ print(at[0] + size[0] // 2, at[1] + size[1] // 2)" "$(field at)" "$(field size)"
 
 trap 'sink_down; rm -rf "$WORK"' EXIT
 
-# Preflight: fail honestly up front if something else can steal focus, instead of eleven misleading FAILs later.
 if ! reset_notepad; then
     echo "  FAIL  the notepad would not stay open across 3 attempts"
     FAIL=1
@@ -437,7 +412,6 @@ for _ in $(seq 1 12); do
         [ "$NOW" = "(none)" ] && NONE_SEEN=yes
     fi
 done
-# Nothing focused is not a thief: Hyprland passes through that, so nudge focus and retry.
 if [ -n "$NONE_SEEN" ] && [ -z "${THIEF##(none)}" ]; then
     echo "         (nothing held the focus; asking the compositor for some)"
     hyprctl dispatch 'hl.dsp.focus({ direction = "left" })' >/dev/null 2>&1
@@ -453,7 +427,6 @@ if [ -n "$NONE_SEEN" ] && [ -z "${THIEF##(none)}" ]; then
         fi
     done
 fi
-# Fatal, not a tally: without the focus, type_into would refuse to type and every gate below is void.
 if [ -z "$HOLDS" ] || [ "$(open)" != OPEN ]; then
     if [ "$THIEF" = "(none)" ]; then
         echo "  FAIL  nothing holds the focus on this desktop, not even the notepad."
@@ -504,7 +477,6 @@ fi
 click_sink
 wait_state closed 40
 check "closed"           "$(open)" "closed"
-# Settled, not instantaneous: focus release is asynchronous, so one read can name the previous window.
 check "focus handed back" "$(stable_focus)"  "$SINK_CLASS"
 
 echo "GATE 4  moving focus with a keybind closes it"
@@ -605,7 +577,6 @@ check "CSS radius == decoration.rounding" "$CSS_R" "$GLOBAL_R"
 check "window rule restates it"           "$RULE_R" "$GLOBAL_R"
 
 echo "GATE 9  a window-manager close is a dismissal, not a quit"
-# Proceed from close_request destroys the widget and bricks the notepad; it must dismiss instead.
 toggle_open
 check "open"      "$(open)" "OPEN"
 check "is focused" "$(act)" "$NOTEPAD_CLASS"
@@ -623,7 +594,6 @@ else
     wait_state closed 40
     check "closed"           "$(open)"  "closed"
     check "process survived" "$(alive)" "1"
-    # The real test: not merely closed, but still alive and still working.
     toggle_open
     check "reopens after a WM close" "$(open)" "OPEN"
     check "still takes focus"        "$(act)"  "$NOTEPAD_CLASS"
@@ -633,7 +603,6 @@ else
 fi
 
 echo "GATE 10  a click outside dismisses, even when it moves no focus"
-# GTK4 has no client pointer grab, so --outside-click binds (non-consuming) report outside clicks; wiring is checked first.
 check "the binary has the --outside-click mode" \
     "$("$SCRATCH_BIN" --help 2>/dev/null | grep -c -- '--outside-click')" "1"
 check "and it is the notepad, not a stale build" \
@@ -658,7 +627,6 @@ print(len([b for b in json.load(sys.stdin)
            and 'outside click' in (b.get('description') or '').lower()
            and b.get('non_consuming')]))")" "2"
 
-# The click must land where focus does not move, or focus-away alone explains the close.
 if ! reset_notepad; then
     echo "  FAIL  the notepad would not stay open across 3 attempts"; FAIL=1
 fi
@@ -687,7 +655,6 @@ def main():
     for m in monitors:
         if m["x"]<=nx<nw+m["x"] or m["x"]<=nx<nw+m["x"] or True:
             pass
-    # pick monitor containing notepad
     for m in monitors:
         if nx>=m["x"] and nx<nw+m["x"] and ny>=m["y"] and ny<nh+m["y"]:
             monitor=m; break
@@ -736,7 +703,6 @@ else
     echo "         $PX,$PY is not a window and should not take focus"
     click_at "$PX" "$PY"
     sleep 0.8
-    # Precondition, not the measurement: if the point moves focus, the checks below are void.
     if [ "$(act)" != "$BEFORE" ]; then
         echo "  FAIL  a click at $PX,$PY moved focus ('$BEFORE' -> '$(act)')"
         echo "  SKIP  the notepad-closed checks below: they would measure"
@@ -755,7 +721,6 @@ else
         check "dismissed by a click that moved no focus" "$(open)" "closed"
         check "process survived"                   "$(alive)" "1"
         check_note "note saved on the way out" "GATE10-OUTSIDE"
-        # The notepad must still be usable afterwards, not merely still running.
         toggle_open
         check "reopens after an outside click" "$(open)" "OPEN"
         check "still takes focus"               "$(act)"  "$NOTEPAD_CLASS"
@@ -764,7 +729,6 @@ else
 fi
 
 echo "GATE 11  a click inside the notepad does not dismiss it"
-# The other half: a script that always said "outside" would pass gate 10 while making the window unclickable.
 if ! reset_notepad; then
     echo "  FAIL  the notepad would not stay open across 3 attempts"; FAIL=1
 else
