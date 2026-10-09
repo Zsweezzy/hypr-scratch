@@ -9,24 +9,14 @@ license = "MIT"
 name = "hypr-scratch"
 path = "src/main.rs"
 
-# Test-only. The acceptance suite needs a second window to click and type into,
-# and this is that window, so the suite needs no terminal emulator on `PATH`.
-# Deliberately not installed.
+# Test-only window for the acceptance suite; deliberately not installed.
 [[bin]]
-# Deliberately short. Linux truncates /proc/PID/comm to 15 characters, so a
-# longer name silently stops matching `pkill -x`, which is how the suite cleans
-# this process up. It did: sinks piled up one per run, and with two of them a
-# Hyprland class selector became ambiguous, so the `pin` and `move` dispatches
-# quietly did nothing and every gate that followed measured the wrong desktop.
+# Deliberately short: Linux truncates /proc/PID/comm to 15 chars and `pkill -x` would stop matching.
 name = "hypr-sink"
 path = "src/bin/sink.rs"
 
 [dependencies]
 gtk4 = "0.11.5"
 libc = "0.2"
-# The outside-click test needs the notepad's rectangle, and `hyprctl` only offers
-# that as JSON. This replaces a `jq` and a `socat` dependency on the user's PATH
-# with one well-known crate, which is a much better trade for a public repo: a
-# missing system tool is invisible until a click stops working, whereas a missing
-# crate is a build error.
+# hyprctl offers the notepad's rectangle only as JSON; one crate beats a jq/socat dependency on PATH.
 serde_json = "1.0"

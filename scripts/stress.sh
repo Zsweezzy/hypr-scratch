@@ -1,22 +1,8 @@
 #!/usr/bin/env bash
-# Stress the open/close cycle.
-#
-# The dismissal is driven by `is-active`, so the thing that can go wrong is a
-# transition being missed or double-counted: the notepad closing itself the
-# instant it opens, or refusing to reopen. Both show up as a wrong state after a
-# fixed settle time, so the state is sampled rather than assumed.
-#
-# It also asserts the *process* is the same one at the end as at the start. State
-# checks alone cannot see a crash: if the app dies, the next toggle quietly
-# starts a fresh primary, the window comes up, the state looks right, and the
-# suite reports a clean run over a binary that fell over. That is not
-# hypothetical here -- a `kill` dispatch aimed at a helper's own window once
-# took the notepad down with it, and the state-based run could not tell.
+# Stress the open/close cycle; also checks the process is the same at the end, so a crash cannot hide behind correct state.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
-# Artifacts go to a scratch dir, not the repo and not a fixed /tmp path: the
-# harness used to hardcode /tmp/opencode, which meant it only worked from one
-# machine's leftovers and would have written into the source tree once it moved.
+# Artifacts go to a scratch dir, not the repo and not a fixed /tmp path.
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/hypr-scratch-stress.XXXXXX")
 export WORK
 trap 'rm -rf "$WORK"' EXIT
@@ -36,25 +22,11 @@ try:
     d = json.load(sys.stdin)
 except ValueError:
     print('(unreadable)'); raise SystemExit(0)
-# Same reasoning as gates.sh: an empty object means nothing holds the focus, and
-# is a state this desktop passes through. Indexing the key raised a KeyError, so
-# every cycle reported an empty class and the run finished 20/20 on focus
-# failures while the notepad was in fact opening and closing correctly.
+# An empty object means nothing holds the focus, a state this desktop passes through.
 print(d.get('class') or '(none)')"; }
 pid() { pgrep -x hypr-scratch 2>/dev/null | head -1; }
 
-# Detach every invocation. Called bare, `hypr-scratch` is a request to toggle
-# *if an instance is running*; if none is, the caller becomes the primary and
-# blocks in the GTK main loop, so a stress run would hang rather than fail. The
-# env var rides along harmlessly -- a secondary sends the toggle and exits
-# without constructing a store -- but it means a recovered primary still uses
-# the scratch note rather than the user's real one.
-#
-# Observe only. Never toggles. This distinction is load-bearing: a toggle sent
-# while a launch is still in flight lands *after* that launch has opened the
-# window and closes it again. The window appears in about 0.3s, so sampling the
-# state 0.05s after starting the process reads "closed", decides a toggle is
-# needed, and then reliably produces a run that opens and immediately closes.
+# Detach every invocation and observe only: a toggle sent while a launch is in flight closes the window it just opened.
 wait_for() {  # $1 = want, $2 = timeout in tenths
     local i=0
     while [ "$i" -lt "${2:-40}" ]; do
@@ -63,9 +35,7 @@ wait_for() {  # $1 = want, $2 = timeout in tenths
     done
     return 1
 }
-# Send exactly one toggle, then wait for the result. Guarded so it is a no-op
-# when the state is already right, but the guard is only an optimisation: it
-# cannot see a launch that is still in flight, which is what `wait_for` is for.
+# Send exactly one toggle; the guard is only an optimisation and cannot see an in-flight launch.
 toggle() {  # $1 = want, $2 = timeout in tenths
     [ "$(open)" = "$1" ] && return 0
     setsid env HYPR_SCRATCH_FILE="$WORK"/v.md "$SCRATCH_BIN" >/dev/null 2>&1 </dev/null &
@@ -77,15 +47,13 @@ pkill -x hypr-scratch 2>/dev/null
 sleep 1.2
 : > "$WORK"/v.md
 setsid env HYPR_SCRATCH_FILE="$WORK"/v.md "$SCRATCH_BIN" >/dev/null 2>&1 </dev/null &
-# Bring it up: give the launch above time to land before deciding anything.
-# Only toggle if the window genuinely never appeared.
+# Give the launch time to land before deciding; only toggle if the window never appeared.
 if ! wait_for OPEN 50 && ! toggle OPEN 50; then
     echo "  FAIL  the notepad would not open to start with"
     exit 1
 fi
 START_PID=$(pid)
 
-# Start from a known-closed state.
 [ "$(open)" = OPEN ] && toggle closed 40
 
 for i in $(seq 1 "$N"); do

@@ -1,51 +1,11 @@
-/* hypr-scratch -- the notepad's appearance.
- *
- * This file is the built-in default, compiled into the binary. To change the
- * colours or the opacity, copy it and edit the copy:
- *
- *     mkdir -p ~/.config/hypr-scratch
- *     cp .../data/style.css ~/.config/hypr-scratch/style.css
- *
- * Or run `hypr-scratch --print-config` to see the exact path it looks in, and
- * `HYPR_SCRATCH_STYLE=/some/other.css` to point it elsewhere.
- *
- * Your file is *layered on top of* this one rather than replacing it, at the same
- * priority. A one-line file that changes only the panel colour is therefore safe:
- * everything below still applies. Two rules are load-bearing and worth keeping
- * even if you rewrite the file -- `border-radius`, which must match
- * `decoration.rounding` in your Hyprland config, and the `textview.scratch-editor
- * text` / `border` rules, which have to beat a `textview` rule in your
- * ~/.config/gtk-4.0/gtk.css or the editor's internals go opaque again and the
- * frosted effect disappears.
- *
- * The palette is Tokyonight Night, by Brandon Sayer, MIT licensed:
- * https://github.com/enkia/tokyonight
- * No Tokyonight file is vendored here -- these are the values, used as written.
- * See NOTICE at the root of the repository.
- */
+/* hypr-scratch's appearance; the built-in default, layered under ~/.config/hypr-scratch/style.css. */
 
 /* Transparent so the compositor's blur shows through the corners. */
 .scratch-window {
     background-color: transparent;
 }
 
-/* 10px, not 20px: this must equal `decoration.rounding` in your Hyprland config,
- * because every other window on the desktop is rounded by that value and a
- * notepad with twice the corner radius reads as a bug rather than a style.
- *
- * This is the layer that actually paints the corner, not the compositor. Setting
- * `rounding = 0` on the window rule leaves the notepad's surface square and the
- * arc is still visible, while a control window obeys `rounding` exactly. So this
- * number is the radius you see, and the rule's `rounding = 10` exists only so the
- * two cannot drift apart.
- *
- * The alpha here is the "how much do I see the desktop through it" dial. It does
- * NOT change the compositor's blur -- blur strength is a global `decoration.blur`
- * setting in Hyprland, shared with every window, and a window rule can only turn
- * it on or off. So raising the alpha hides more of the blur rather than
- * strengthening it. If you want a genuinely frostier panel, raise
- * `decoration.blur.size` and `passes` in your Hyprland config and accept that
- * every window on the desktop gets blurrier. */
+/* 10px, matching `decoration.rounding`; GTK paints this arc, the compositor does not clip it. */
 .scratch-panel {
     background-color: rgba(22, 22, 30, 0.86);
     border: 1px solid rgba(41, 46, 66, 0.9);
@@ -66,12 +26,7 @@
     outline: none;
 }
 
-/* The text view draws on two internal nodes, `text` and `border`, and a typical
- * global stylesheet paints both of them an opaque #323449. Those nodes are what
- * actually cover the panel, so the surface went opaque -- leaving the compositor
- * nothing to blur -- and the square edges leaked past the panel's rounded corners.
- * Element+class selectors, so these outrank a bare `textview text` rule even if
- * its priority changes. */
+/* Element+class selectors so the editor's internal `text`/`border` nodes outrank a bare `textview text` rule. */
 textview.scratch-editor text {
     background-color: transparent;
 }

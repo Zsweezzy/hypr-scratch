@@ -1,33 +1,4 @@
-//! Deciding whether a click landed outside the notepad.
-//!
-//! This exists as a mode of the notepad's own binary rather than as a shell
-//! script, and that is a deliberate trade. It started as
-//! `hypr-scratch-outside-click.sh` and needed three things from the user's
-//! `PATH`: `socat` to connect to the socket, and `jq` to read the rectangle out
-//! of `hyprctl clients -j`. That is three ways for a click handler to silently do
-//! nothing on somebody else's machine, and one of them had already happened --
-//! `printf > "$socket"` opens a socket path `O_WRONLY` and gets `ENXIO`, so the
-//! original script exited 0 having achieved nothing at all.
-//!
-//! Here the only external program involved is `hyprctl`, which is a given when
-//! running under Hyprland, and the socket write is code this program already had.
-//! A user who installs the binary and pastes two binds has a working
-//! click-away, with nothing else to install and no script to keep in sync.
-//!
-//! # Why the compositor has to be involved at all
-//!
-//! GTK 4 removed the client-side pointer grab API outright -- `gdk::Seat` in
-//! gdk4 0.11.5 has no `grab` method -- so a window that is not already grabbing
-//! never hears about clicks outside itself. The notepad cannot take a grab to
-//! find out, because a grab is exactly what it gave up: while one is held,
-//! Hyprland will not move focus off the notepad, so focus-away dismissal stops
-//! working *and* clicks on the windows underneath are swallowed. There is no
-//! arrangement that observes both.
-//!
-//! `EventControllerMotion` does report the pointer crossing the notepad's edges,
-//! but only on a *transition*, and the notepad is opened by a keybind -- so the
-//! pointer is usually somewhere else already and never enters. Clicking the
-//! desktop background then produces no event of any kind.
+//! Decides whether a click landed outside the notepad, via the compositor.
 
 use serde_json::Value;
 
@@ -35,8 +6,7 @@ use crate::hypr;
 use crate::ipc::{self, Command};
 use crate::ui::WINDOW_CLASS;
 
-/// An axis-aligned rectangle in the layout's logical coordinates, as `hyprctl`
-/// reports it.
+/// Rectangle in the compositor's logical coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rect {
     pub left: i32,
@@ -46,36 +16,18 @@ pub struct Rect {
 }
 
 impl Rect {
-    /// Whether a point is inside, with the edges counted as inside.
-    ///
-    /// Inclusive on purpose, and asymmetrically so: a click on the very edge of
-    /// the notepad is a click *on the notepad*, and dismissing the window
-    /// because the pointer happened to land on its border would make the
-    /// notepad impossible to click along its edges. The one-pixel-outside cases
-    /// are one pixel outside, not a rounding artefact of an inclusive test.
+    /// Inclusive edges: a click on the notepad's border counts as inside.
     pub fn contains(&self, x: i32, y: i32) -> bool {
         x >= self.left && x <= self.right && y >= self.top && y <= self.bottom
     }
 
-    /// The middle pixel of the rectangle, as the compositor's logical
-    /// coordinates.
-    ///
-    /// `right` and `bottom` are inclusive, so this floors toward the top-left.
-    /// That is the point: an even-sided rectangle has no single middle pixel,
-    /// and the lower of the two middles is still inside `contains`, which is
-    /// what keeps a warp and the dismissal test agreeing about where the
-    /// notepad is.
+    /// Inclusive `right`/`bottom`, so this floors toward the top-left.
     pub fn centre(&self) -> (i32, i32) {
         ((self.left + self.right) / 2, (self.top + self.bottom) / 2)
     }
 }
 
-/// Whether a click at `point` should dismiss the notepad.
-///
-/// `rect` is `None` when the notepad is not among the compositor's windows, which
-/// is the normal state while the process is alive but the window is hidden. There
-/// is then nothing to dismiss, and a `dismiss` would be a message telling the
-/// notepad to hide a window that is not there.
+/// `rect` is `None` while the process is alive but the window is hidden.
 pub fn should_dismiss(point: (i32, i32), rect: Option<Rect>) -> bool {
     match rect {
         None => false,
@@ -83,18 +35,9 @@ pub fn should_dismiss(point: (i32, i32), rect: Option<Rect>) -> bool {
     }
 }
 
-/// Handles one compositor-reported click. Bound to bare LMB and RMB in
-/// `hyprland.lua` with `non_consuming`, so the click still reaches whatever was
-/// underneath: dismissing the notepad and focusing something else should be one
-/// gesture, not two.
-///
-/// Must never kill the notepad. It has unsaved text and is expected to still be
-/// there for the next hotkey, so this only ever sends a message. The notepad
-/// flushes and hides when it receives it.
+/// Never kills the notepad: it has unsaved text, so this only ever sends a message.
 pub fn handle_click() {
-    // Cheapest question first. This runs on every click in the session and the
-    // overwhelmingly common case is that the notepad is closed, so that case
-    // costs one `stat` and no subprocesses at all.
+    // Cheapest question first: the notepad is usually closed.
     if !ipc::is_running() {
         return;
     }
@@ -107,20 +50,7 @@ pub fn handle_click() {
     }
 }
 
-/// Moves the pointer to the middle of the notepad, so a click that was meant for
-/// somewhere else does not immediately dismiss the window just opened.
-///
-/// The notepad is opened by a keybind, so the pointer is wherever the user left
-/// it. `--outside-click` is bound to bare LMB and RMB on the whole desktop, so a
-/// stray click with the pointer still parked on another window would dismiss the
-/// notepad before it was ever used. Warping the pointer into the window removes
-/// that failure rather than papering over it, and it is the same coordinate
-/// space the dismissal uses: both read `notepad_rect()`, so the point the pointer
-/// lands on is one `Rect::contains` accepts.
-///
-/// Gated on `is_running` so the check costs one `stat` when the notepad is not
-/// up, the same cheap guard `handle_click` opens with; without it every warp
-/// would pay for a `hyprctl clients -j` query whose answer is already known.
+/// Warps the pointer to the notepad's centre; gated on `is_running` so it costs one `stat` when down.
 pub fn warp_into_notepad() {
     if !ipc::is_running() {
         return;
@@ -132,23 +62,14 @@ pub fn warp_into_notepad() {
     hypr::move_cursor(x, y);
 }
 
-/// Where the pointer is, as the compositor sees it.
-///
-/// `hyprctl cursorpos` prints two plain numbers, so this needs no JSON and is the
-/// cheapest of the two queries.
+/// `hyprctl cursorpos` prints two plain numbers, so no JSON here.
 fn cursor_position() -> Option<(i32, i32)> {
     let output = hypr::query(&["cursorpos"])?;
     let (x, y) = output.trim().split_once(',')?;
     Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
 }
 
-/// The notepad's rectangle, or `None` if it is not currently a window.
-///
-/// The only place this needs JSON. Unknown fields are ignored and the numbers are
-/// taken by name, so a Hyprland release that adds keys does not break it, and one
-/// that renames `at` degrades to "not present" -- which means clicks stop
-/// dismissing, loudly, instead of dismissing on every click, which would be
-/// unusable and so would be noticed.
+/// Unknown fields are ignored and numbers taken by name, so new Hyprland keys do not break it.
 fn notepad_rect() -> Option<Rect> {
     let clients = hypr::query(&["clients", "-j"])?;
     let parsed: Value = serde_json::from_str(&clients).ok()?;
@@ -166,11 +87,7 @@ fn notepad_rect() -> Option<Rect> {
         .and_then(rect_from)
 }
 
-/// Reads the rectangle out of one client object.
-///
-/// Takes `at` and `size` as the two-element arrays `hyprctl` emits, and rejects
-/// anything that is not a positive size, so a malformed entry cannot produce a
-/// rectangle that swallows every click on the desktop.
+/// Rejects a non-positive size, so a malformed entry cannot swallow every click.
 fn rect_from(client: &Value) -> Option<Rect> {
     let pair = |key: &str| -> Option<[i32; 2]> {
         let values = client.get(key)?.as_array()?;
@@ -207,12 +124,12 @@ mod tests {
     #[test]
     fn a_click_inside_or_on_the_edge_does_not_dismiss() {
         for (x, y) in [
-            (100, 200), // the exact top-left corner
-            (739, 679), // the exact bottom-right corner
-            (100, 679), // the other two corners
+            (100, 200),
+            (739, 679),
+            (100, 679),
             (739, 200),
-            (419, 439), // the middle
-            (101, 201), // one pixel in from a corner
+            (419, 439),
+            (101, 201),
         ] {
             assert!(
                 !should_dismiss((x, y), Some(PANEL)),
@@ -221,17 +138,16 @@ mod tests {
         }
     }
 
-    /// The distinction the whole feature rests on, tested one pixel at a time so
-    /// a `<` quietly becoming `<=` cannot pass by accident on the far side.
+    /// Tested one pixel at a time so a `<` becoming `<=` cannot pass by accident.
     #[test]
     fn a_click_even_one_pixel_outside_dismisses() {
         for (x, y) in [
-            (99, 439),  // one left of the panel
-            (740, 439), // one right
-            (419, 199), // one above
-            (419, 680), // one below
-            (0, 0),     // a far corner of the desktop
-            (99, 199),  // diagonally outside a corner
+            (99, 439),
+            (740, 439),
+            (419, 199),
+            (419, 680),
+            (0, 0),
+            (99, 199),
         ] {
             assert!(
                 should_dismiss((x, y), Some(PANEL)),
@@ -240,24 +156,20 @@ mod tests {
         }
     }
 
-    /// A hidden notepad has nothing to dismiss, and telling it to hide would be
-    /// a message about a window that is not there.
+    /// A hidden notepad has nothing to dismiss.
     #[test]
     fn a_hidden_notepad_is_never_dismissed() {
         assert!(!should_dismiss((0, 0), None));
         assert!(!should_dismiss((419, 439), None));
     }
 
-    /// The warp target and the point the tests above call "the middle" have to
-    /// be the same pixel, or the pointer lands where a click would dismiss.
+    /// The warp target and the point the tests call "the middle" must be the same pixel.
     #[test]
     fn the_panel_centre_is_the_middle_pixel() {
         assert_eq!(PANEL.centre(), (419, 439));
     }
 
-    /// Zero is not a border case to be handled at the call site; it is a reason to
-    /// refuse to build a rectangle at all, because a zero-sized one at the origin
-    /// contains nothing and would dismiss every click in the session.
+    /// Zero size refuses the rectangle: a zero-sized one at the origin would dismiss every click.
     #[test]
     fn a_degenerate_rectangle_is_not_built() {
         use serde_json::json;
@@ -278,9 +190,7 @@ mod tests {
         assert_eq!(super::rect_from(&json!({})), None);
     }
 
-    /// The rectangle the notepad's own client entry should produce, checked
-    /// against a real `hyprctl clients -j` entry so the field names and the
-    /// off-by-one in the far edges are pinned to what the compositor says.
+    /// Checked against a real `hyprctl clients -j` entry, pinning the field names and the far-edge off-by-one.
     #[test]
     fn a_real_client_entry_becomes_the_right_rectangle() {
         use serde_json::json;
@@ -297,9 +207,7 @@ mod tests {
             Some(Rect {
                 left: 2560,
                 top: 317,
-                // `size` is a width, so the last covered pixel is at +639, not
-                // +640. Getting this wrong by one makes the right and bottom
-                // edges one pixel too generous.
+                // `size` is a width, so the last covered pixel is at +639, not +640.
                 right: 3199,
                 bottom: 796,
             })

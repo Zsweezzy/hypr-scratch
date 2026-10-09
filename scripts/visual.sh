@@ -1,18 +1,8 @@
 #!/usr/bin/env bash
-# Visual acceptance for hypr-scratch, run against the compositor rather than the
-# app: A/B the blur rule, and check the panel corners are actually rounded.
-#
-# The coordinate trap: `hyprctl clients` reports x/y in global *logical* space
-# and w/h in *logical* too, but `grim` captures *physical* pixels. On a scale-2
-# monitor whose logical origin is x=1920, a panel at logical (2560,317) 640x480
-# is physical ((2560-1920)*2, 317*2) = (1280,634) 1280x960. Every monitor's
-# origin, size and scale is read from the compositor rather than tabulated, since
-# a table is a guess about somebody else's desk.
+# Visual acceptance: A/B the blur rule and check the panel corners are rounded; all coordinates read from the compositor.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
-# Artifacts go to a scratch dir, not the repo and not a fixed /tmp path: the
-# harness used to hardcode /tmp/opencode, which meant it only worked from one
-# machine's leftovers and would have written into the source tree once it moved.
+# Artifacts go to a scratch dir, not the repo and not a fixed /tmp path.
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/hypr-scratch-visual.XXXXXX")
 export WORK
 FAIL=0
@@ -21,18 +11,13 @@ FAIL=0
 require_command SCRATCH_BIN hypr-scratch
 require_hyprland_config
 
-# Developer-only visual check: every gate here shoots the screen, so unlike
-# `gates.sh` there is nothing that survives without a screenshot tool. Refuse
-# rather than fail later with an empty capture.
+# Every gate here shoots the screen, so refuse without grim rather than fail later with an empty capture.
 if ! command -v grim >/dev/null 2>&1; then
     echo "This is the developer visual check; it needs 'grim' on PATH." >&2
     exit 2
 fi
 
-# Restore the config on the way out, whatever happened. This script edits the
-# user's Hyprland config to A/B the blur rule, and a run that dies between
-# "rewrite" and "rewrite back" would otherwise leave `no_blur = true` behind --
-# a silently blurrier desktop that has nothing to do with a regression.
+# Restore the config on the way out: this script edits it to A/B the blur rule, so a died run must not leave `no_blur`.
 CONFIG_BACKUP=$WORK/hyprland.conf.orig
 cp "$HYPRLAND_CONFIG" "$CONFIG_BACKUP" || {
     echo "  FAIL  could not back up $HYPRLAND_CONFIG" >&2
@@ -45,21 +30,7 @@ restore_config() {
 trap restore_config EXIT
 cd "$HERE"
 
-# The notepad's rect in PHYSICAL pixels, plus the name of the monitor it is on.
-#
-# The conversion is the whole reason this function exists, and it is arithmetic
-# with three inputs, any of which differs per machine: the monitor's logical
-# origin, its scale, and whether it is the one whose pixels `grim` will capture.
-# A hardcoded table of monitors got two of those right only by coincidence, and
-# silently measured a cropped region of nothing whenever the desktop disagreed.
-#
-# It used to be a `case` on the monitor id naming three specific outputs with
-# their offsets baked in, which is a description of one desk, not of Hyprland.
-# Everything is read from the session instead. `scale` is a float on some
-# monitors, so the result is rounded to whole pixels: `grim` captures integers
-# and `Image.getpixel` takes integers, and rounding is the honest way to say
-# "approximately here" rather than truncating toward zero and being off by one
-# at a fractional origin.
+# The notepad's rect in physical pixels plus its monitor name; read from the session, not a hardcoded table.
 physical_geom() { physical_geom_of "$NOTEPAD_CLASS"; }
 
 is_open() { hyprctl clients -j 2>/dev/null | python3 -c "
@@ -68,10 +39,7 @@ want = os.environ['NOTEPAD_CLASS']
 print('yes' if any(c['class'] == want for c in json.load(sys.stdin)) else 'no')"; }
 
 open_notepad() {
-    # Poll, and retry. A fixed `sleep 3` and hope is how a run ends up measuring
-    # a window that is not there: Steam took focus during development, the
-    # notepad correctly dismissed itself, and every measurement below then ran
-    # against an empty crop and reported a confident zero.
+    # Poll and retry; a fixed sleep is how a run ends up measuring a window that is not there.
     local attempt=0
     while [ "$attempt" -lt 3 ]; do
         attempt=$((attempt + 1))
@@ -91,9 +59,7 @@ open_notepad() {
 }
 
 set_blur() {  # $1 = true (blur on) | false (blur off)
-    # 2>&1 so the reason lands in $out. Without it a failure prints the message
-    # to the terminal and "FAIL" with nothing after it, which is the same
-    # unreadable empty-reason failure the gate had one revision earlier.
+    # 2>&1 so the reason lands in $out; otherwise a failure prints an empty reason.
     local out
     out=$(python3 - "$HYPRLAND_CONFIG" "$1" 2>&1 <<'PY'
 import re
@@ -101,24 +67,9 @@ import sys
 
 cfg, on = sys.argv[1], sys.argv[2] == 'true'
 want = not on          # no_blur is the negation of "blur on"
-# Which rule is the notepad's. Backslashes are stripped before matching, because
-# a plain config spells the class as a regex -- `class:^(dev\.Zsweezzy\.HyprScratch)$`
-# -- and comparing that against the literal class finds nothing. The trailing
-# `(?!\\w)` is what keeps the *test sink*, whose class is the notepad's plus
-# "Sink", from being read as the notepad: a rule that turns blur off for the
-# sink says nothing about the panel being measured.
+# Which rule is the notepad's; backslashes stripped, and the trailing (?!\w) keeps the test sink out.
 MARKER = re.compile(r'(?<!\w)(?:dev\.Zsweezzy\.)?HyprScratch(?!\w)|hypr-scratch-overlay')
-# Both a Lua config's `hl.window_rule({...})` and a plain `windowrulev2 = ...`
-# open a rule. The Lua form spans lines, so a rule is collected by brace
-# balance rather than by line, and the marker may be on any line of it.
-#
-# The `v2` is a group, not a suffix. Written as `windowrulev2?` the pattern asks
-# for a literal "windowrulev" with an optional "2", which matches no spelling of
-# the directive at all -- and because a redundant `windowrule\s*=` alternative was
-# hiding that in RULE, only PLAIN was broken, only for plain configs, and only as
-# a silent no-op. The Lua path worked, the suite went green, and the one thing it
-# could not do was edit a plain config. That is the exact shape of bug this
-# repository keeps a test for.
+# `windowrule(?:v2)?` as a group; written `windowrulev2?` it matched no spelling for plain configs.
 RULE = re.compile(r'windowrule(?:v2)?\s*=|window_rule\s*\(')
 NO_BLUR = re.compile(r'no_blur\s*=\s*(?:true|false)')
 PLAIN = re.compile(r'^(\s*windowrule(?:v2)?\s*=\s*)(.*?)\s*$')
@@ -148,10 +99,7 @@ def set_plain(line, allow_add):
     if want and not allow_add:
         return line
     if not want:
-        # Remove one occurrence, taking whichever comma went with it. The edit is
-        # surgical rather than a rebuild from split(','): rebuilding normalises
-        # the spacing, so a cycle would leave a config that differs from the
-        # original and grows a keyword per pass.
+        # Surgical removal, not a rebuild from split(','), which normalises spacing and grows a keyword per pass.
         out = re.sub(r'no_blur\s*,\s*', '', body, count=1)
         if out == body:
             out = re.sub(r'\s*,\s*no_blur\s*$', '', body, count=1)
@@ -194,42 +142,23 @@ while i < len(lines):
             lines[j] = new
             hits += 1
 
-# `found`, not `hits`. The first thing this script does is ask for the state the
-# config is already in -- "turn blur on" when the rule already says
-# `no_blur = false` -- and that legitimately changes nothing. Counting edits as
-# proof the rule exists makes the first call fail on a perfectly correct config,
-# which is how the blur gate spent one run reporting an empty reason and blaming
-# a rule it had in fact found and correctly left alone.
+# Count `found`, not `hits`: the first call legitimately changes nothing.
 if found == 0:
     sys.exit(f'no hypr-scratch window rule in {cfg}, so there is nothing to toggle')
-# A plain config whose keywords are spread over several windowrulev2 lines does
-# not come back byte-identical -- the keyword is re-added to the first rule
-# rather than to whichever line it was on. That is reported rather than hidden,
-# because "the config you were measuring with is not the one you had" is the
-# sort of thing that invalidates the number printed below. The trap on the way
-# out restores the original from the backup taken before the first edit, so this
-# is a note about the measurement, not a risk to the file.
+# A spread-out plain config does not come back byte-identical; reported rather than hidden.
 open(cfg, 'w').write('\n'.join(lines))
 print(f'{found} rule(s), {hits} line(s) changed')
 PY
     ) || { echo "  FAIL  could not set the blur rule: $out"; exit 1; }
     echo "         blur $([ "$1" = true ] && echo on || echo off): $out"
-    # `luac` is a nicety, not a requirement. Written as
-    # `command -v luac && luac -p ... || fail`, a machine without it fails the
-    # `&&` chain and falls into the `||` branch, so the gate reported a Lua
-    # syntax error in a config it had never tried to parse -- on every desktop
-    # without the Lua toolchain, which is every plain `.conf` one. It only means
-    # anything for a Lua config in the first place.
+    # luac is a nicety: `command -v luac && ... || fail` would fall into the fail branch without it.
     if command -v luac >/dev/null; then
         luac -p "$HYPRLAND_CONFIG" || {
             echo "  FAIL  the edit left a Lua syntax error in $HYPRLAND_CONFIG"
             exit 1
         }
     fi
-    # The authoritative check, and the one that covers a plain config as well: if
-    # the compositor still loads the config afterwards, the edit was survivable.
-    # A config that fails to reload leaves the notepad unruled and the blur
-    # measurement meaningless, so that is checked rather than assumed.
+    # The authoritative check: if the compositor still loads the config, the edit was survivable.
     if ! hyprctl reload >/dev/null 2>&1; then
         echo "  FAIL  $HYPRLAND_CONFIG does not load; the edit broke it"
         exit 1
@@ -239,14 +168,11 @@ PY
 
 shoot() {  # $1 = output name
     local geom; geom=$(physical_geom)
-    # Without this the `read` below quietly yields five empty fields, the
-    # arithmetic below quietly yields a degenerate box, and the crop is silently
-    # empty -- so the diff is empty and the gate reports a confident zero.
+    # Without this, empty fields yield a degenerate box and a confidently-zero diff.
     if [ -z "$geom" ]; then
         echo "  FAIL  no geometry for the notepad; is it open?"
         exit 1
     fi
-    # $PX $PY $PW $PH land in the scratch dir for python
     printf '%s\n' "$geom" > "$WORK"/.geom
     local out; out=$(awk '{print $1}' "$WORK"/.geom)
     grim -o "$out" "$1"
@@ -269,9 +195,7 @@ PY
 }
 
 echo "GATE 8  the panel is translucent enough for the compositor to frost it"
-# A/B with a null control. Two shots in the same state give the noise floor, so
-# the blur-off comparison has something to be compared against: a difference
-# that is only a little larger than the noise floor is not evidence of blur.
+# A/B with a null control: two shots in the same state give the noise floor to compare against.
 panel_diff() { python3 -c "
 import os, sys
 from PIL import Image, ImageChops
@@ -300,9 +224,7 @@ echo "  interior mean/stddev, blur off: $(stats "$WORK"/blur_off.png 2>&1)"
 echo "  noise floor, blur on  vs on  : $NULL"
 echo "  noise floor, blur off vs off : $OFFNULL"
 echo "  blur on vs off (the effect)   : $EFFECT"
-# An empty result means the measurement failed, which is a different problem
-# from the blur not working. Say so, rather than comparing empty strings and
-# reporting a confident zero.
+# An empty result means the measurement failed, not that blur is broken; say so rather than reporting zero.
 if [ -z "$NULL" ] || ! printf '%s' "$NULL" | grep -qE '^[0-9]+ '; then
     echo "  FAIL  could not measure the panel: $NULL"
     FAIL=1
@@ -326,9 +248,7 @@ from PIL import Image
 WORK = os.environ['WORK']
 px, py, pw, ph = (int(v) for v in open(os.path.join(WORK, '.geom')).read().split()[-4:])
 im = Image.open(os.path.join(WORK, "final.png")).convert('RGB')
-# Sample a short way along each edge. A rounded corner shows the backdrop here
-# (low contrast against the panel); a square one would show panel fill, which
-# differs from the interior by the panel's own alpha over whatever is behind.
+# Sample a short way along each edge; a rounded corner shows backdrop, a square one shows panel fill.
 interior = im.getpixel((px + pw // 2, py + ph // 2))
 def spread(points):
     vals = [im.getpixel((px + dx, py + dy)) for dx, dy in points]

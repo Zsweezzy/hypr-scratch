@@ -14,12 +14,7 @@ use gtk4::{gio::prelude::*, glib};
 use crate::store::NOTE_PATH_ENV;
 
 fn main() {
-    // Fallback for the case where no desktop portal is answering: GTK_THEME is
-    // ignored when the portal supplies `gtk-theme`, so the real pin lives in
-    // `ui::create_window`, which sets it through GtkSettings instead.
-    //
-    // SAFETY: `main` is single-threaded at this point and no other thread has
-    // been spawned, so there is no concurrent reader of the environment.
+    // SAFETY: `main` is single-threaded here, so no concurrent reader of the environment.
     unsafe { std::env::set_var("GTK_THEME", "Adwaita:dark") };
 
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -54,10 +49,7 @@ fn main() {
         return;
     }
 
-    // Handled before anything is initialised, and in particular before GTK: this
-    // runs on every click in the session, so it must not open a display
-    // connection, set up a `GtkApplication`, or touch the instance socket. It
-    // either finds a running notepad and sends it one line, or does nothing.
+    // Runs on every click: must not open a display connection or touch the instance socket.
     if arguments
         .iter()
         .any(|argument| argument == "--outside-click")
@@ -89,8 +81,7 @@ fn main() {
         Ok(ipc::AcquiredInstance::Primary(instance)) => {
             Some(instance.spawn_listener(pending.clone()))
         }
-        // Another instance already owns the socket. It just received our
-        // toggle, so this process has nothing left to do.
+        // Another instance owns the socket and received our toggle; nothing left to do.
         Ok(ipc::AcquiredInstance::Secondary) => return,
         Err(error) => {
             eprintln!("could not start scratchpad instance: {error}");
@@ -131,9 +122,7 @@ fn main() {
         }
     });
 
-    // Keep the process alive after the notepad is hidden. The per-user Unix
-    // socket forwards later invocations here, so the hotkey toggles one
-    // notepad instead of starting a second copy.
+    // Keep the process alive when hidden; the socket forwards later invocations here.
     let _hold = app.hold();
     app.run();
 }

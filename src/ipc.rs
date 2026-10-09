@@ -17,30 +17,13 @@ use std::{
     time::Duration,
 };
 
-/// The bytes each command puts on the wire.
-///
-/// Both are sent by this program now. `toggle` comes from the hotkey invoking the
-/// binary again; `dismiss` comes from the same binary's `--outside-click` mode,
-/// which the compositor calls on every click. Neither is ever sent by the app to
-/// itself.
+/// Message bytes: `toggle` from the hotkey, `dismiss` from `--outside-click`.
 const TOGGLE_MESSAGE: &[u8] = b"toggle\n";
 const DISMISS_MESSAGE: &[u8] = b"dismiss\n";
 
-/// The longest line accepted off the socket before the connection is given up on.
 const MAX_COMMAND_LEN: usize = 64;
 
-/// Something the notepad was asked to do.
-///
-/// `Toggle` comes from the hotkey, which runs the binary again and finds this
-/// process through the socket.
-///
-/// `Dismiss` comes from `--outside-click`, which the compositor calls on every
-/// mouse press and which sends `dismiss\n` only after establishing that the
-/// click landed outside this window's rectangle.
-///
-/// The two are deliberately distinct rather than one command with an argument: a
-/// click inside the notepad and a hotkey press are the same event as far as the
-/// compositor is concerned, and only the geometry check tells them apart.
+/// Distinct commands: a click inside and a hotkey press look identical to the compositor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     Toggle,
@@ -56,22 +39,9 @@ impl Command {
     }
 }
 
-/// Asks the running instance to do something, if there is one.
-///
-/// This is how both senders reach the notepad, and it is the reason the
-/// click-away feature needs no `socat` and no shell script: connecting to a Unix
-/// socket is something this program can already do, and the version that used to
-/// delegate it to a shell script could not, because `printf > "$socket"` opens
-/// the path `O_WRONLY` and a Unix socket refuses that with `ENXIO`. The only way
-/// in is `connect(2)`.
-///
-/// Reports whether the message went out. Every failure is quiet by design: this
-/// runs on every click in the session, and a notepad that is not running is the
-/// overwhelmingly common case, not an error.
+/// Quiet on failure: this runs on every click, and a notepad that is not running is the common case.
 pub fn send(command: Command) -> bool {
-    // Checked before connecting, so the common case costs one `stat` and no
-    // socket machinery. A stale socket left by a `SIGKILL`ed instance still
-    // passes this, and the connect below then fails, which is the right answer.
+    // Checked before connecting, so the common case costs one `stat`.
     if !is_running() {
         return false;
     }
@@ -82,23 +52,14 @@ pub fn send(command: Command) -> bool {
     stream.write_all(command.message()).is_ok()
 }
 
-/// Whether an instance is listening.
-///
-/// Deliberately only a `stat` on the socket path, with no connection: this is on
-/// the hot path of every click, and a notepad that has crashed without cleaning up
-/// would otherwise cost a failed connect on every click for the rest of the
-/// session.
+/// Just a `stat`, no connection: this is on the hot path of every click.
 pub fn is_running() -> bool {
     socket_path().is_ok_and(|path| path.exists())
 }
 
 const SEND_TIMEOUT: Duration = Duration::from_millis(200);
 
-/// Commands that have arrived but not yet been applied by the GTK main loop.
-///
-/// Two atomics rather than a channel. The GTK side has to poll either way, and
-/// every channel type here would mean a dependency for what is two bits of
-/// state. The listener thread only ever sets; the main loop only ever takes.
+/// Two atomics, not a channel: the GTK side has to poll either way.
 #[derive(Default)]
 pub struct PendingCommands {
     toggle: AtomicBool,
@@ -156,15 +117,7 @@ impl PrimaryInstance {
     }
 }
 
-/// Reads one newline-terminated command, or `None` if the line is not one.
-///
-/// Line-oriented rather than a fixed-length read so a second command can be
-/// added without the reader caring how long it is. That matters more than it
-/// looks: a fixed `read_exact` of `toggle\n`'s length would read the first 7
-/// bytes of `dismiss\n` as `dismiss`, not `toggle`, compare unequal and throw
-/// the message away -- and an unmatched command is silent, so the feature would
-/// simply never fire. Existing senders are unaffected, since `toggle\n` still
-/// parses to the same command.
+/// Line-oriented, so a longer command is not truncated to a fixed length.
 fn read_command(reader: &mut impl Read) -> io::Result<Option<Command>> {
     let mut line = Vec::new();
     let mut byte = [0_u8; 1];
@@ -174,8 +127,7 @@ fn read_command(reader: &mut impl Read) -> io::Result<Option<Command>> {
             Ok(_) if byte[0] == b'\n' => break,
             Ok(_) => {
                 if line.len() == MAX_COMMAND_LEN {
-                    // Never a real command. Stop reading rather than buffer a
-                    // peer that is not going to send a newline.
+                    // Never a real command; stop rather than buffer a peer with no newline.
                     return Ok(None);
                 }
                 line.push(byte[0]);
@@ -203,8 +155,7 @@ fn acquire_instance_at(path: &Path) -> io::Result<AcquiredInstance> {
     for _ in 0..100 {
         match try_lock(&lock) {
             Ok(()) => {
-                // A legacy primary may predate the lock file. Give it a
-                // chance to receive the toggle before replacing a stale path.
+                // A legacy primary may predate the lock file; offer it the toggle first.
                 if try_toggle_existing(path)? {
                     return Ok(AcquiredInstance::Secondary);
                 }
@@ -221,8 +172,7 @@ fn acquire_instance_at(path: &Path) -> io::Result<AcquiredInstance> {
                 if try_toggle_existing(path)? {
                     return Ok(AcquiredInstance::Secondary);
                 }
-                // The lock owner may be between opening the lock and binding
-                // its socket. Retry briefly instead of stealing its endpoint.
+                // The lock owner may not have bound its socket yet; retry instead of stealing it.
                 thread::sleep(Duration::from_millis(10));
             }
             Err(error) => return Err(error),
@@ -307,12 +257,7 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::thread;
 
-    /// Each command must raise its own flag and no other.
-    ///
-    /// The two are a pair of independent booleans read by two separate branches
-    /// of the GTK poll, so a mix-up is invisible: a click that opened the
-    /// notepad instead of closing it, or a hotkey that closed it. Nothing fails,
-    /// nothing is logged, and the feature just does not work.
+    /// Each command must raise its own flag and no other; a mix-up is silent.
     #[test]
     fn each_command_raises_only_its_own_flag() {
         for (command, toggle, dismiss) in [
@@ -334,13 +279,7 @@ mod tests {
         }
     }
 
-    /// The whole path a `dismiss` takes, over a real socket.
-    ///
-    /// The listener thread loops forever, so this drives the same three steps it
-    /// performs per connection rather than the loop itself: read the line, parse
-    /// it, raise the flag. Reading from a real `UnixStream` rather than a
-    /// `Cursor` is the point -- a socket is free to hand over a partial line, and
-    /// the byte-at-a-time loop has to cope with that.
+    /// The whole `dismiss` path over a real socket, which may split the line.
     #[test]
     fn a_dismiss_written_to_a_socket_ends_up_as_a_pending_command() {
         let pending = PendingCommands::default();
@@ -365,11 +304,7 @@ mod tests {
         assert!(!pending.take_toggle());
     }
 
-    /// Feeds a message one byte per read.
-    ///
-    /// A socket is not obliged to hand over a whole write in one read, so a
-    /// reader that assumes it does is wrong in a way that only shows up when
-    /// the timing is unlucky.
+    /// Feeds a message one byte per read, as a socket is free to do.
     struct Fragmented<'a> {
         bytes: &'a [u8],
         position: usize,
@@ -398,14 +333,7 @@ mod tests {
         );
     }
 
-    /// Both messages the senders can write, asserted against the exact bytes on
-    /// the wire.
-    ///
-    /// `dismiss` is the one worth having. It is a byte longer than `toggle`, so
-    /// a reader that stopped at a fixed length would take the first 7 bytes of
-    /// `dismiss\n`, fail to match, and drop it -- silently, since an unmatched
-    /// command is not an error. The notepad would then simply never dismiss on a
-    /// click, with nothing in any log to say why.
+    /// `dismiss` is a byte longer than `toggle`, so a fixed-length reader would drop it silently.
     #[test]
     fn every_message_a_sender_writes_parses_to_its_own_command() {
         for (message, want) in [
@@ -426,8 +354,7 @@ mod tests {
     fn unknown_and_unterminated_lines_are_ignored_rather_than_guessed_at() {
         for message in [
             &b"nonsense\n"[..],
-            // A peer that connects and says nothing must not be read as a
-            // command.
+            // A peer that connects and says nothing must not be read as a command.
             b"",
             // Long enough to set the cap off, with no terminator anywhere.
             &[b'x'; MAX_COMMAND_LEN + 1],

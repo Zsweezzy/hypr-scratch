@@ -3,18 +3,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Overrides the note location. Without it the note lives at
-/// `~/Documents/scratchpad.md`.
+/// Overrides the note location; without it the note lives at `~/Documents/scratchpad.md`.
 pub const NOTE_PATH_ENV: &str = "HYPR_SCRATCH_FILE";
 
 const DEFAULT_FILE_NAME: &str = "scratchpad.md";
 const STARTER_CONTENTS: &str = "# Scratchpad\n";
 
-/// A single plain-text note on disk.
-///
-/// Saves are atomic: the text goes to a sibling `.tmp` file that is then
-/// renamed over the note. A crash or a full disk can therefore leave the
-/// previous note intact instead of a half-written one.
+/// Saves are atomic: write a `.tmp` sibling, then rename over the note.
 pub struct NoteStore {
     path: PathBuf,
 }
@@ -58,11 +53,7 @@ impl NoteStore {
     }
 }
 
-/// Where the note lives, honouring [`NOTE_PATH_ENV`].
-///
-/// Public so `--print-config` can report the path this build would actually use,
-/// rather than a path reconstructed in the help text and liable to drift from
-/// this function.
+/// Public so `--print-config` reports the path this build actually uses.
 pub fn default_path() -> PathBuf {
     if let Some(raw) = non_empty_env(NOTE_PATH_ENV) {
         return expand_home(raw);
