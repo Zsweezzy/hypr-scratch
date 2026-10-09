@@ -1,2 +1,3 @@
 scripts/*.py linguist-vendored
 scripts/__pycache__ linguist-generated
+scripts/no_focus_point.py linguist-vendored linguist-generated=false
