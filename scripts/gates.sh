@@ -662,7 +662,70 @@ print(len([b for b in json.load(sys.stdin)
 if ! reset_notepad; then
     echo "  FAIL  the notepad would not stay open across 3 attempts"; FAIL=1
 fi
-POINT=$(python3 no_focus_point.py 2>"$WORK"/point.err) || POINT=""
+POINT=$(PYEOF='PYEOF'; python3 -c "$(cat <<'PYEOF'
+"""Print `x,y` for a point where a click will not move focus, so gate 10 can tell outside-click from focus-away dismissal."""
+import json,subprocess,sys,time
+NOTEPAD_CLASS="dev.Zsweezzy.HyprScratch"
+BACKGROUND_LEVELS={"0"}
+INSET=6
+def hyprctl(*a):
+    return json.loads(subprocess.run(["hyprctl",*a,"-j"],capture_output=True,text=True).stdout)
+def main():
+    try:
+        clients=hyprctl("clients")
+        monitors=hyprctl("monitors")
+        surfaces=hyprctl("layers")
+    except Exception as e:
+        print(e,file=sys.stderr); return 1
+    nx,ny,nw,nh=None,None,None,None
+    for c in clients:
+        if c["class"]==NOTEPAD_CLASS:
+            nx,ny=c["at"]; nw,nh=c["size"]; break
+    if nx is None:
+        print("no notepad",file=sys.stderr); return 1
+    monitor=None
+    for m in monitors:
+        if m["x"]<=nx<nw+m["x"] or m["x"]<=nx<nw+m["x"] or True:
+            pass
+    # pick monitor containing notepad
+    for m in monitors:
+        if nx>=m["x"] and nx<nw+m["x"] and ny>=m["y"] and ny<nh+m["y"]:
+            monitor=m; break
+    if monitor is None:
+        monitor=monitors[0] if monitors else None
+    if monitor is None: print("no monitor",file=sys.stderr); return 1
+    margin=40
+    notepad_rect=(nx-margin,ny-margin,nx+nw+margin,ny+nh+margin)
+    def clear_of_notepad(x,y):
+        return not (notepad_rect[0]<=x<=notepad_rect[2] and notepad_rect[1]<=y<=notepad_rect[3])
+    def inside(s,x,y,inset=INSET):
+        return s["x"]+inset<=x<=s["x"]+s["w"]-inset and s["y"]+inset<=y<=s["y"]+s["h"]-inset
+    scale=monitor["scale"]
+    for s in surfaces:
+        x=s["x"]+s["w"]//2; y=s["y"]+s["h"]//2
+        if inside(s,x,y) and clear_of_notepad(x,y) and s.get("level",0) not in BACKGROUND_LEVELS:
+            print(f"{x},{y}"); return 0
+    blocked=[]
+    for c in clients:
+        ax,ay=c["at"]; cw,ch=c["size"]; blocked.append((ax,ay,ax+cw,ay+ch))
+    for s in surfaces:
+        blocked.append((s["x"],s["y"],s["x"]+s["w"],s["y"]+s["h"]))
+    left=monitor["x"]+INSET; right=monitor["x"]+monitor["width"]//scale-INSET
+    top=monitor["y"]+INSET; bottom=monitor["y"]+monitor["height"]//scale-INSET
+    cx,cy=nx+nw//2,ny+nh//2
+    best=None; bestd=None
+    for x in range(left,right+1,8):
+        for y in range(top,bottom+1,8):
+            if not clear_of_notepad(x,y): continue
+            if any(bx<=x<=bx2 and by<=y<=by2 for bx,by,bx2,by2 in blocked): continue
+            d=abs(x-cx)+abs(y-cy)
+            if bestd is None or d<bestd: best,bestd=(x,y),d
+    if best is not None:
+        print(f"{best[0]},{best[1]}"); return 0
+    print("no point",file=sys.stderr); return 1
+if __name__=="__main__": sys.exit(main())
+PYEOF
+)" 2>"$WORK"/point.err) || POINT=""
 if [ -z "$POINT" ]; then
     echo "  FAIL  no point where a click leaves focus alone: $(cat "$WORK"/point.err)"
     FAIL=1
