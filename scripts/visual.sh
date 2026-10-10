@@ -18,11 +18,7 @@ cp "$HYPRLAND_CONFIG" "$CONFIG_BACKUP" || {
     echo "  FAIL  could not back up $HYPRLAND_CONFIG" >&2
     exit 1
 }
-restore_config() {
-    cp "$CONFIG_BACKUP" "$HYPRLAND_CONFIG" 2>/dev/null
-    rm -rf "$WORK"
-}
-trap restore_config EXIT
+trap 'cp "$CONFIG_BACKUP" "$HYPRLAND_CONFIG" 2>/dev/null; rm -rf "$WORK"' EXIT
 cd "$HERE" || exit
 
 physical_geom() { physical_geom_of "$NOTEPAD_CLASS"; }
@@ -51,15 +47,15 @@ open_notepad() {
     exit 1
 }
 
-set_blur() {  # $1 = true (blur on) | false (blur off)
+set_blur() {
     local out
     out=$(python3 - "$HYPRLAND_CONFIG" "$1" 2>&1 <<'PY'
 import re
 import sys
 
 cfg, on = sys.argv[1], sys.argv[2] == 'true'
-want = not on          # no_blur is the negation of "blur on"
-# Which rule is the notepad's; backslashes stripped, and the trailing (?!\w) keeps the test sink out.
+want = not on
+
 MARKER = re.compile(r'(?<!\w)(?:dev\.Zsweezzy\.)?HyprScratch(?!\w)|hypr-scratch-overlay')
 RULE = re.compile(r'windowrule(?:v2)?\s*=|window_rule\s*\(')
 NO_BLUR = re.compile(r'no_blur\s*=\s*(?:true|false)')
@@ -152,7 +148,7 @@ PY
     sleep 1
 }
 
-shoot() {  # $1 = output name
+shoot() {
     local geom; geom=$(physical_geom)
     if [ -z "$geom" ]; then
         echo "  FAIL  no geometry for the notepad; is it open?"
@@ -224,7 +220,7 @@ fi
 set_blur true; open_notepad; shoot "$WORK"/final.png
 
 echo "GATE 9  the corners are rounded, not square"
-python3 - <<'PY'
+if python3 - <<'PY'
 import os
 import sys
 from PIL import Image
@@ -250,7 +246,11 @@ for name, pts in corners.items():
         bad += 1
 sys.exit(1 if bad else 0)
 PY
-[ $? = 0 ] && echo "  PASS  all four corners follow the rounded path" || { echo "  FAIL  a corner is filled square"; FAIL=1; }
+then
+    echo "  PASS  all four corners follow the rounded path"
+else
+    echo "  FAIL  a corner is filled square"; FAIL=1
+fi
 
 echo
 [ "$FAIL" = 0 ] && echo "ALL VISUAL GATES PASSED" || echo "SOME VISUAL GATES FAILED"

@@ -20,10 +20,9 @@ require_command() {
     export variable
 }
 
-# The notepad's window class, matched by equality; a substring match would land on the test sink.
 export NOTEPAD_CLASS=dev.Zsweezzy.HyprScratch
 
-physical_geom_of() {  # $1 = window class -> "name px py pw ph", or exits
+physical_geom_of() {
     python3 -c "
 import json, os, subprocess, sys
 want = sys.argv[1]
@@ -43,7 +42,7 @@ w, h = win['size']
 px, py = round((x - mon['x']) * sc), round((y - mon['y']) * sc)
 print(mon['name'], px, py, round(w * sc), round(h * sc))" "$1"; }
 
-reserved_top_px() {  # $1 = monitor name
+reserved_top_px() {
     python3 -c "
 import json, subprocess, sys
 name = sys.argv[1]
@@ -57,8 +56,7 @@ if len(res) != 4:
     sys.exit(f'monitor {name} has a {len(res)}-entry reserved field, expected 4')
 print(round(int(res[1]) * float(mon['scale'])))" "$1"; }
 
-# Builds the test-only sink if missing; its class must stay short (comm truncates at 15 chars) or pkill -x misses it.
-SINK_CLASS=dev.Zsweezzy.HyprScratchSink
+export SINK_CLASS=dev.Zsweezzy.HyprScratchSink
 SINK_BIN=$HERE/../target/debug/hypr-sink
 require_sink() {
     if [ ! -x "$SINK_BIN" ]; then
@@ -70,7 +68,6 @@ require_sink() {
     fi
 }
 
-# The user's Hyprland config for the blur and `rounding` checks; neither is derivable from the session.
 HYPRLAND_CONFIG=${HYPR_SCRATCH_HYPRLAND_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/hypr/hyprland.lua}
 export HYPRLAND_CONFIG
 
@@ -83,7 +80,6 @@ require_hyprland_config() {
     fi
 }
 
-# The corner radius in the notepad's window rule, in either dialect; the class must appear in the same rule.
 rule_rounding() {
     python3 -c "
 import re, sys
@@ -95,7 +91,7 @@ except OSError as exc:
     sys.exit('cannot read ' + path + ': ' + str(exc.strno))
 
 def class_patterns(rule):
-    # Every way a class can be written across the two dialects and quoting styles.
+
     out = []
     out += re.findall(r'class\s*:\s*([^,\n]+)', rule)
     out += re.findall(r'class\s*[:=]\s*\"([^\"]*)\"', rule)
@@ -104,7 +100,7 @@ def class_patterns(rule):
     return [p.strip() for p in out]
 
 def covers(rule):
-    # Ask the regex, not substring containment: the test sink's class contains the notepad's.
+
     for pat in class_patterns(rule):
         try:
             if re.search(pat, cls):

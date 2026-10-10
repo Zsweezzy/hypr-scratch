@@ -22,7 +22,7 @@ except ValueError:
 print(d.get('class') or '(none)')"; }
 pid() { pgrep -x hypr-scratch 2>/dev/null | head -1; }
 
-wait_for() {  # $1 = want, $2 = timeout in tenths
+wait_for() {
     local i=0
     while [ "$i" -lt "${2:-40}" ]; do
         [ "$(open)" = "$1" ] && return 0
@@ -30,7 +30,7 @@ wait_for() {  # $1 = want, $2 = timeout in tenths
     done
     return 1
 }
-toggle() {  # $1 = want, $2 = timeout in tenths
+toggle() {
     [ "$(open)" = "$1" ] && return 0
     setsid env HYPR_SCRATCH_FILE="$WORK"/v.md "$SCRATCH_BIN" >/dev/null 2>&1 </dev/null &
     wait_for "$1" "$2"
@@ -72,6 +72,8 @@ for i in $(seq 1 "$N"); do
 done
 
 echo "  cycles: $N  reopen-failures: $REOPEN_FAIL  focus-failures: $FAILED_FOCUS  stuck: $STUCK_OPEN  crashed: $DIED"
-[ "$REOPEN_FAIL" = 0 ] && [ "$FAILED_FOCUS" = 0 ] && [ "$STUCK_OPEN" = 0 ] && [ "$DIED" = 0 ] \
-    && echo "  PASS  every cycle opened, focused, and closed, in the same process" \
-    || { echo "  FAIL  unstable"; exit 1; }
+if [ "$REOPEN_FAIL" = 0 ] && [ "$FAILED_FOCUS" = 0 ] && [ "$STUCK_OPEN" = 0 ] && [ "$DIED" = 0 ]; then
+    echo "  PASS  every cycle opened, focused, and closed, in the same process"
+else
+    echo "  FAIL  unstable"; exit 1
+fi

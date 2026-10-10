@@ -13,7 +13,7 @@ HAVE_GRIM=0
 command -v grim >/dev/null 2>&1 && HAVE_GRIM=1
 SINK_X=1980
 SINK_Y=880
-# Filled in by sink_up from the window's real geometry; left empty so a stray click_sink clicks nothing.
+
 SINK_PX=""
 SINK_PY=""
 SINK_PX_W=""
@@ -53,11 +53,11 @@ check() {
 }
 
 note() { cat "$WORK"/v.md 2>/dev/null; }
-note_says() {  # $1 = the marker to look for
+note_says() {
     case $(note) in *"$1"*) return 0 ;; *) return 1 ;; esac
 }
 
-check_note() {  # $1 = label, $2 = marker
+check_note() {
     local got
     got=$(note)
     if [ -z "$got" ]; then
@@ -83,7 +83,7 @@ check_note() {  # $1 = label, $2 = marker
     echo "  PASS  $1"
 }
 
-wait_state() {  # $1 = want, $2 = timeout in tenths of a second
+wait_state() {
     local i=0
     while [ "$i" -lt "${2:-30}" ]; do
         [ "$(open)" = "$1" ] && return 0
@@ -91,11 +91,11 @@ wait_state() {  # $1 = want, $2 = timeout in tenths of a second
     done
     return 1
 }
-type_into() {  # $1 = the class that must have the focus, $2.. = wtype arguments
+type_into() {
     local want=$1 have
     shift
     have=$(act)
-    # The suite may take focus back from its own sink, but nothing else; a browser or empty desktop aborts.
+
     if [ "$have" = "$SINK_CLASS" ] && [ "$want" != "$SINK_CLASS" ]; then
         echo "         the suite's own sink has the focus; asking for $want back"
         hyprctl dispatch "hl.dsp.focus({ class = \"$want\" })" >/dev/null 2>&1
@@ -110,8 +110,8 @@ type_into() {  # $1 = the class that must have the focus, $2.. = wtype arguments
     fi
     wtype "$@"
 }
-# The focused window's class, sampled until two reads agree, because focus release is asynchronous.
-stable_focus() {  # $1 = timeout in tenths of a second
+
+stable_focus() {
     local i=0 prev="" cur
     while [ "$i" -lt "${1:-20}" ]; do
         cur=$(act)
@@ -145,7 +145,6 @@ reset_notepad() {
     return 1
 }
 
-## The sink window: a floated, pinned target the suite owns and places, built from src/bin/sink.rs.
 SINK_PID=""
 sink_windows() {
     hyprctl clients -j 2>/dev/null | python3 -c "
@@ -163,7 +162,6 @@ for c in json.load(sys.stdin):
         break" 2>/dev/null
 }
 
-# Crop box in physical px; trims the reserved top strip so the bar's repaint is not read as the sink changing.
 sink_crop_box() {
     local geom mon px py pw ph res v
     geom=$(physical_geom_of "$SINK_CLASS") || return 1
@@ -182,7 +180,6 @@ sink_crop_box() {
     echo "$px $py $pw $ph"
 }
 
-# Click point on the sink's largest notepad-free area; fails if none is at least 8px wide.
 sink_exposed_point() {
     python3 -c "
 import json, subprocess, sys
@@ -224,8 +221,7 @@ if c is None:
 print(str(bool(c.get('floating'))).lower(), str(bool(c.get('pinned'))).lower())" 2>/dev/null
 }
 
-# Set float/pin rather than toggling: the notepad rule's .*HyprScratch.* match already pins the sink.
-sink_set_state() {  # $1 = want float, $2 = want pin
+sink_set_state() {
     local sel="class = \"$SINK_CLASS\"" cur
     cur=$(sink_state) || return 1
     if [ "${cur%% *}" != "$1" ]; then
@@ -274,16 +270,16 @@ sink_up() {
         [ "$(sink_windows)" -ge 1 ] && break
         sleep 0.25; i=$((i + 1))
     done
-    # A selector matching two windows acts on nothing yet reports ok: assert exactly one sink.
+
     case $(sink_windows) in
         1) ;;
         0) echo "  FAIL  the sink window never appeared; is GTK working?"; return 1 ;;
         *) echo "  FAIL  $(sink_windows) sink windows are up; a leaked one is in the way"
            echo "        pkill -9 -x hypr-sink, then re-run"; return 1 ;;
     esac
-    # class = "..." syntax, not class:foo -- a Lua syntax error there no-ops the dispatch while printing ok.
+
     local sel="class = \"$SINK_CLASS\""
-    # Set the state rather than dispatching the toggles blindly; see sink_set_state.
+
     if ! SINK_STATE=$(sink_set_state true true); then
         echo "  FAIL  the sink's float and pin state could not be read or set, so"
         echo "        every click below would land on whatever is underneath it"
@@ -305,8 +301,8 @@ sink_up() {
         FAIL=1
         return 1
     fi
-    local fx fy fw fh
-    read -r fx fy fw fh <<<"$fit"
+    local fx fy
+    read -r fx fy <<<"$fit"
     if [ "$fx" != "$SINK_X" ] || [ "$fy" != "$SINK_Y" ]; then
         echo "         asked for ($SINK_X,$SINK_Y), which is off the usable area;"
         echo "         using ($fx,$fy) instead"
@@ -319,14 +315,14 @@ sink_up() {
         return 1
     fi
     read -r SINK_PX SINK_PY SINK_AT_X SINK_AT_Y SINK_W SINK_H <<<"$SINK_GEOM"
-    # Post-condition: confirm the sink really landed in the usable area, not merely that we asked.
+
     local check
     if ! check=$(sink_fit); then
         echo "  FAIL  $check"
         FAIL=1
         return 1
     fi
-    read -r fx fy fw fh <<<"$check"
+    read -r fx fy <<<"$check"
     if [ "$fx" != "$SINK_AT_X" ] || [ "$fy" != "$SINK_AT_Y" ]; then
         echo "  FAIL  the sink is at ($SINK_AT_X,$SINK_AT_Y) but the usable area needs"
         echo "        ($fx,$fy). Part of it is off-screen, so a screenshot of it cannot"
@@ -351,14 +347,14 @@ sink_up() {
     fi
 }
 sink_down() {
-    # Kill by PID, not a selector: one matching nothing falls back to the focused window.
+
     if [ -n "$SINK_PID" ] && kill -0 "$SINK_PID" 2>/dev/null; then
         kill -9 "$SINK_PID" 2>/dev/null
     fi
     SINK_PID=""
     pkill -9 -x hypr-sink 2>/dev/null
     sleep 0.4
-    # Wait for the window, not just the process: one on its way out still matches the class.
+
     local i=0
     while [ "$i" -lt 20 ] && [ "$(sink_windows)" -gt 0 ]; do
         sleep 0.15; i=$((i + 1))
@@ -374,7 +370,7 @@ click_sink() {
     sleep 0.3
     ydotool click 0xC0 >/dev/null 2>&1
 }
-monitor_at() {  # $1 = logical x -> the monitor's name
+monitor_at() {
     hyprctl monitors -j 2>/dev/null | python3 -c "
 import json, sys
 x = int(sys.argv[1])
@@ -382,12 +378,12 @@ for m in json.load(sys.stdin):
     if m['x'] <= x < m['x'] + m['width'] // m['scale']:
         print(m['name']); break" "$1"
 }
-click_at() {  # $1 = logical x, $2 = logical y
+click_at() {
     hyprctl dispatch "hl.dsp.cursor.move({ x = $1, y = $2 })" >/dev/null 2>&1
     sleep 0.3
     ydotool click 0xC0 >/dev/null 2>&1
 }
-centre() {  # the middle of the notepad, as the compositor reports it
+centre() {
     python3 -c "
 import json, sys
 at, size = json.loads(sys.argv[1]), json.loads(sys.argv[2])
@@ -469,7 +465,7 @@ check_note "note written" "GATE2-TYPE"
 check "still open"    "$(open)"      "OPEN"
 
 echo "GATE 3  clicking another window closes it"
-# Checked: a sink that did not come up would make the failure name the notepad, not the missing window.
+
 if ! sink_up; then
     echo "  FAIL  there is no sink window to click"
     exit 1
@@ -494,7 +490,6 @@ wait_state closed 40
 check "notepad closed"   "$(open)" "closed"
 check "sink focused"     "$(stable_focus)"  "$SINK_CLASS"
 
-# Crop to the sink's own rect, not the whole monitor: a monitor-wide diff can pass on a window it is not testing.
 if [ "$HAVE_GRIM" = 0 ]; then
     echo "  SKIP  grim is not installed; the sink pixel-diff needs a screenshot tool"
 else
@@ -556,14 +551,14 @@ echo "GATE 7  the note is saved when the notepad closes"
 check_note "note persisted" "GATE2-TYPE"
 
 echo "GATE 8  the notepad's corner radius matches the rest of the desktop"
-# CSS paints the corners, nothing else ties them to decoration.rounding; the number is read from data/style.css.
+
 CSS_R=$(sed -n 's/.*border-radius: \([0-9]*\)px;.*/\1/p' "$HERE"/../data/style.css | head -1)
 if [ -z "$CSS_R" ]; then
     echo "  FAIL  no border-radius found in data/style.css"
     FAIL=1
 fi
 GLOBAL_R=$(hyprctl getoption decoration:rounding 2>/dev/null | head -1 | sed 's/int: //')
-# The rule's own rounding: an empty result is not a pass, since a rule that restates nothing leaves it to chance.
+
 if [ ! -f "$HYPRLAND_CONFIG" ]; then
     echo "  FAIL  no Hyprland config at $HYPRLAND_CONFIG (set HYPR_SCRATCH_HYPRLAND_CONFIG)"
     FAIL=1
@@ -580,7 +575,7 @@ echo "GATE 9  a window-manager close is a dismissal, not a quit"
 toggle_open
 check "open"      "$(open)" "OPEN"
 check "is focused" "$(act)" "$NOTEPAD_CLASS"
-# Address, not a class selector: a class that matches nothing falls back to the focused window.
+
 ADDR=$(hyprctl clients -j 2>/dev/null | python3 -c "
 import json, os, sys
 want = os.environ['NOTEPAD_CLASS']
@@ -607,7 +602,7 @@ check "the binary has the --outside-click mode" \
     "$("$SCRATCH_BIN" --help 2>/dev/null | grep -c -- '--outside-click')" "1"
 check "and it is the notepad, not a stale build" \
     "$([ -x "$SCRATCH_BIN" ] && echo yes || echo no)" "yes"
-bind_count() {  # $1 = description
+bind_count() {
     hyprctl binds -j 2>/dev/null | python3 -c "
 import json, sys
 want = sys.argv[1]
